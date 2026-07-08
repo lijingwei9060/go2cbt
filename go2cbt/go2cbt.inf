@@ -1,0 +1,57 @@
+;
+; go2cbt.inf
+;
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=System
+ClassGuid={4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider=%ManufacturerName%
+DriverVer=07/07/2026,1.0.0.0
+CatalogFile=go2cbt.cat
+PnpLockdown=1
+
+[DefaultInstall.NTamd64]
+CopyFiles=DriverCopyFiles
+
+
+
+[DefaultInstall.NTamd64.Services]
+AddService=go2cbt,0x00000002,go2cbt_Service
+
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+go2cbt.sys=1
+
+;===========================================================
+; Driver Service
+;===========================================================
+
+[go2cbt_Service]
+DisplayName=%ServiceName%
+ServiceType=1                  ; SERVICE_KERNEL_DRIVER
+StartType=3                    ; SERVICE_DEMAND_START
+ErrorControl=1                 ; SERVICE_ERROR_NORMAL
+
+ServiceBinary=%12%\go2cbt.sys
+
+
+
+;===========================================================
+; Driver Files
+;===========================================================
+
+[DriverCopyFiles]
+go2cbt.sys
+
+
+[Strings]
+ManufacturerName="casoul" ;TODO: Replace with your manufacturer name
+DiskName="go2cbt Source Disk"
+ServiceName="go2cbt CBT Disk Change Tracking Driver"
