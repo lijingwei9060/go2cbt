@@ -28,34 +28,45 @@ typedef struct _CBT_SLIST_ENTRY {
 } CBT_SLIST_ENTRY, * PCBT_SLIST_ENTRY;
 
 #define MAX_CBT_SLIST_POOL  4096
+#define MAX_HOOKED_DRIVERS  8    // 最多 Hook 8 个不同的驱动
+#define MAX_DISK_MAP_ENTRIES 64   // 最多 64 个磁盘/分区设备
+#define MAX_DISKS           8    // 最多检查 8 个物理磁盘
+#define MAX_PARTITIONS      16   // 每磁盘最多 16 个分区
 
-// 设备扩展
-typedef struct _DEVICE_EXTENSION {
-	PDEVICE_OBJECT       DeviceObject;
 
-	// Hook 信息
-	PDRIVER_OBJECT       DiskDriverObject;     // 被 Hook 的磁盘驱动对象
-	PDRIVER_DISPATCH     OriginalWrite;        // 原始 IRP_MJ_WRITE 函数指针
-	PDRIVER_DISPATCH     OriginalRead;         // 原始 IRP_MJ_READ 函数指针
-	BOOLEAN              HookInstalled;        // Hook 是否成功安装
+// ========================================
+// 数据结构设计 - 两个独立的表
+// ========================================
 
-	// 统计
-	ULONG                WriteIrpsReceived;    // 收到的写 IRP 总数
-	ULONG                ReadIrpsReceived;     // 收到的读 IRP 总数
-	ULONG                DiskCount;            // Hook 的磁盘数
+// Hook 表: 按 DriverObject 存储 (每个被 Hook 的驱动一条记录)
+// 这个表解决 "OriginalWrite 不止一个" 的问题
+typedef struct _HOOK_ENTRY {
+	PDRIVER_OBJECT   DriverObject;           // 被 Hook 的驱动对象 (查找键)
+	PDRIVER_DISPATCH OriginalWrite;           // 该驱动的原始 IRP_MJ_WRITE 函数
+	BOOLEAN          HookInstalled;           // 是否已安装 Hook
+	ULONG            RefCount;                // 多少个磁盘设备引用此驱动
+	LARGE_INTEGER    HookInstallTime;         // Hook 安装时间
+} HOOK_ENTRY, * PHOOK_ENTRY;
 
-	
-	ULONG                CbtRecordCount;
+// 磁盘映射表: 按 DeviceObject 存储 (每个磁盘/分区设备一条记录)
+// 这个表解决 "DiskNum 保存在哪里" 和 "偏移转换" 的问题
+typedef struct _DISK_MAP_ENTRY {
+	PDEVICE_OBJECT   DeviceObject;           // IRP 中的 DeviceObject 参数 (查找键)
+	PHOOK_ENTRY      HookEntry;              // → 指向 Hook 表中的对应条目 (核心!)
+	ULONG            DiskNumber;             // Harddisk%d 中的 %d
+	ULONG            PartitionNumber;         // Partition%d 中的 %d
+	LARGE_INTEGER    PartitionStartingOffset; // 分区在磁盘上的起始偏移
+	BOOLEAN          IsPartition0;            // 是否代表整个磁盘
+} DISK_MAP_ENTRY, * PDISK_MAP_ENTRY;
 
-	// 验证信息
-	PVOID                HookVerifyAddr;       // MajorFunction[4] 被替换后的实际值
-	LARGE_INTEGER        HookInstallTime;      // Hook 安装时间
-
-} DEVICE_EXTENSION, * PDEVICE_EXTENSION;
 
 // 全局变量
 extern PDEVICE_OBJECT g_ControlDevice;
-extern PDEVICE_EXTENSION g_DevExt;
+extern HOOK_ENTRY     g_HookList[MAX_HOOKED_DRIVERS];
+extern ULONG          g_HookListCount;
+
+extern DISK_MAP_ENTRY g_DiskMap[MAX_DISK_MAP_ENTRIES];
+extern ULONG          g_DiskMapCount;
 
 // ========================================
 // Forward declarations
@@ -65,4 +76,8 @@ NTSTATUS CbtDispatchCreate(PDEVICE_OBJECT DeviceObject, PIRP Irp);
 NTSTATUS CbtDispatchClose(PDEVICE_OBJECT DeviceObject, PIRP Irp);
 NTSTATUS CbtDispatchDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp);
 VOID CbtUnload(PDRIVER_OBJECT DriverObject);
-NTSTATUS InstallAndVerifyHook(PDRIVER_OBJECT DriverObject);
+//NTSTATUS InstallAndVerifyHook(PDRIVER_OBJECT DriverObject);
+
+
+PHOOK_ENTRY FindOrCreateHookEntry(PDRIVER_OBJECT DriverObject);
+NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject);

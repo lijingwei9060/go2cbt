@@ -1,118 +1,178 @@
 ﻿#include "go2cbt.h"
 
+
 // ========================================
-// Hook 安装与验证 - 核心逻辑
+// 核心: 查找或创建 Hook 表条目 (去重!)
 // ========================================
-NTSTATUS InstallAndVerifyHook(PDRIVER_OBJECT DriverObject) {
-	UNREFERENCED_PARAMETER(DriverObject);
-	NTSTATUS status;
-	UNICODE_STRING diskDeviceName;
-	PFILE_OBJECT fileObject = NULL;
-	PDEVICE_OBJECT diskDeviceObject = NULL;
-	PDRIVER_OBJECT diskDriverObject = NULL;
 
-	// ---- Step 1: 找到磁盘设备对象 ----
-	// 尝试 \Device\Harddisk0\Partition0 到 Harddisk3
-	ULONG hookedCount = 0;
-
-	for (ULONG diskNum = 0; diskNum < 4; diskNum++) {
-		//RtlInitUnicodeString(&diskDeviceName, L"\\Device\\Harddisk0\\Partition0");
-		// 动态构建设备名 (sprintf 风格)
-		WCHAR nameBuf[64];
-		//swprintf(nameBuf, 64, L"\\Device\\Harddisk%d\\Partition0", diskNum);
-		RtlStringCchPrintfW(
-			nameBuf,
-			RTL_NUMBER_OF(nameBuf),
-			L"\\Device\\Harddisk%lu\\Partition0",
-			diskNum
-		);
-		RtlInitUnicodeString(&diskDeviceName, nameBuf);
-
-		KdPrint(("CBT: Trying to open %wZ\n", &diskDeviceName));
-
-		status = IoGetDeviceObjectPointer(&diskDeviceName, FILE_READ_ATTRIBUTES,
-			&fileObject, &diskDeviceObject);
-		if (!NT_SUCCESS(status)) {
-			KdPrint(("CBT: Disk %lu not found (status=0x%08x). Skipping.\n",
-				diskNum, status));
-			continue;
-		}
-
-		// ---- Step 2: 获取磁盘驱动的 DriverObject ----
-		diskDriverObject = diskDeviceObject->DriverObject;
-		KdPrint(("CBT: Disk %lu DriverObject = 0x%p\n", diskNum, diskDriverObject));
-
-		// ---- Step 3: 验证 MajorFunction[4] 当前值 ----
-		PDRIVER_DISPATCH currentWrite = diskDriverObject->MajorFunction[IRP_MJ_WRITE];
-		PDRIVER_DISPATCH currentRead = diskDriverObject->MajorFunction[IRP_MJ_READ];
-		KdPrint(("CBT: Original IRP_MJ_WRITE handler = 0x%p\n", currentWrite));
-		KdPrint(("CBT: Original IRP_MJ_READ  handler = 0x%p\n", currentRead));
-
-		// ---- Step 4: 保存原始函数指针 ----
-		g_DevExt->OriginalWrite = currentWrite;
-		g_DevExt->OriginalRead = currentRead;
-		g_DevExt->DiskDriverObject = diskDriverObject;
-
-		// ---- Step 5: 原子替换 MajorFunction[IRP_MJ_WRITE] ----
-		KdPrint(("CBT: Hooking IRP_MJ_WRITE with HwReadWrite (0x%p)...\n", (PVOID)HwReadWrite));
-
-		InterlockedExchangePointer(
-			(PVOID*)&diskDriverObject->MajorFunction[IRP_MJ_WRITE],
-			(PVOID)HwReadWrite
-		);
-
-		// ---- Step 6: 自验证 - 读取替换后的值确认成功 ----
-		PDRIVER_DISPATCH newWrite = diskDriverObject->MajorFunction[IRP_MJ_WRITE];
-		KdPrint(("CBT: After hook, MajorFunction[IRP_MJ_WRITE] = 0x%p\n", newWrite));
-		KdPrint(("CBT: HwReadWrite actual address = 0x%p\n", (PVOID)HwReadWrite));
-
-		if (newWrite == (PDRIVER_DISPATCH)HwReadWrite) {
-			g_DevExt->HookInstalled = TRUE;
-			g_DevExt->HookVerifyAddr = (PVOID)newWrite;
-			KeQuerySystemTime(&g_DevExt->HookInstallTime);
-			hookedCount++;
-			KdPrint(("CBT: HOOK VERIFIED for Disk %lu! MajorFunction[4] = 0x%p matches HwReadWrite\n",
-				diskNum, newWrite));
-		}
-		else {
-			g_DevExt->HookInstalled = FALSE;
-			KdPrint(("CBT: HOOK FAILED for Disk %lu! MajorFunction[4] = 0x%p, expected 0x%p\n",
-				diskNum, newWrite, (PVOID)HwReadWrite));
-			// 可能的原因:
-			// 1. 另一个驱动已经 Hook 了这个位置
-			// 2. diskDriverObject 不是真正的磁盘类驱动
-			// 3. 内存保护 (不太可能, MajorFunction 是可写数据段)
-		}
-
-		// ---- Step 7: 可选 - 也 Hook IRP_MJ_READ ----
-		// 如果需要跟踪读操作 (CBT 通常只需要写)
-		// InterlockedExchangePointer(
-		//     (PVOID*)&diskDriverObject->MajorFunction[IRP_MJ_READ],
-		//     (PVOID)HwReadWrite  // 或单独的 HwRead 函数
-		// );
-
-		// fileObject 需要解除引用 (IoGetDeviceObjectPointer 增加了引用)
-		if (fileObject) {
-			ObDereferenceObject(fileObject);
-			fileObject = NULL;
-		}
-
-		// 只需要 Hook 第一个成功的磁盘 (后续可以扩展为多磁盘)
-		if (g_DevExt->HookInstalled) {
-			break;
+/**
+ * FindOrCreateHookEntry - 查找已有的 Hook 条目, 或创建新的
+ *
+ * 关键逻辑:
+ * - 如果 DriverObject 已在表中 → 返回已有条目 (避免二次 Hook!)
+ * - 如果 DriverObject 不在表中 → 创建新条目, 保存 OriginalWrite, Hook MajorFunction
+ *
+ * 这保证了:
+ * 1. 同一个 DriverObject (如 disk.sys) 不会被 Hook 两次
+ * 2. 不同 DriverObject (如 disk.sys 和 vhdmp.sys) 各有独立的 OriginalWrite
+ * 3. OriginalWrite 不会被覆盖
+ */
+PHOOK_ENTRY FindOrCreateHookEntry(PDRIVER_OBJECT DriverObject) {
+	// ---- 第一步: 在已有表中查找 ----
+	for (ULONG i = 0; i < g_HookListCount; i++) {
+		if (g_HookList[i].DriverObject == DriverObject) {
+			KdPrint(("CBT: DriverObject 0x%p already hooked (entry [%lu], RefCount=%lu)\n",
+				DriverObject, i, g_HookList[i].RefCount));
+			g_HookList[i].RefCount++;  // 引用计数增加
+			return &g_HookList[i];
 		}
 	}
 
-	g_DevExt->DiskCount = hookedCount;
+	// ---- 第二步: 不在表中, 创建新条目 ----
+	if (g_HookListCount >= MAX_HOOKED_DRIVERS) {
+		KdPrint(("CBT: Too many hooked drivers! Max=%d\n", MAX_HOOKED_DRIVERS));
+		return NULL;
+	}
 
-	if (hookedCount > 0) {
-		KdPrint(("CBT: Successfully hooked %lu disk(s)\n", hookedCount));
-		KdPrint(("CBT: Hook verification passed at DriverEntry level\n"));
-		KdPrint(("CBT: System should remain stable - MajorFunction[] is not PatchGuard protected\n"));
-		return STATUS_SUCCESS;
+	PHOOK_ENTRY newEntry = &g_HookList[g_HookListCount];
+	newEntry->DriverObject = DriverObject;
+	newEntry->RefCount = 1;
+
+	// ---- 第三步: 保存原始函数指针 (在 Hook 之前!) ----
+	newEntry->OriginalWrite = DriverObject->MajorFunction[IRP_MJ_WRITE];
+
+	KdPrint(("CBT: New hook entry [%lu] for DriverObject 0x%p\n", g_HookListCount, DriverObject));
+	KdPrint(("CBT:   OriginalWrite = 0x%p\n", (PVOID)newEntry->OriginalWrite));
+
+	// ---- 第四步: 执行 Hook (原子替换) ----
+	InterlockedExchangePointer((PVOID*)&DriverObject->MajorFunction[IRP_MJ_WRITE], (PVOID)HwReadWrite);
+
+	// ---- 第五步: 自验证 ----
+	PDRIVER_DISPATCH verifyAddr = DriverObject->MajorFunction[IRP_MJ_WRITE];
+	if (verifyAddr == (PDRIVER_DISPATCH)HwReadWrite) {
+		newEntry->HookInstalled = TRUE;
+		KeQuerySystemTime(&newEntry->HookInstallTime);
+		KdPrint(("CBT: Hook verified! MajorFunction[4] = 0x%p (HwReadWrite)\n", (PVOID)verifyAddr));
 	}
 	else {
-		KdPrint(("CBT: Failed to hook any disk\n"));
-		return STATUS_UNSUCCESSFUL;
+		newEntry->HookInstalled = FALSE;
+		KdPrint(("CBT: Hook FAILED! MajorFunction[4] = 0x%p, expected 0x%p\n", (PVOID)verifyAddr, (PVOID)HwReadWrite));
+		// 可能另一个驱动已经 Hook 了
+		// 检查 verifyAddr 是否是某个已知的 Hook 函数
 	}
+
+	g_HookListCount++;
+	return newEntry;
 }
+
+// ========================================
+// DriverEntry: 构建两个表
+// ========================================
+
+NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
+	UNREFERENCED_PARAMETER(DriverObject);
+	NTSTATUS status;
+
+	KdPrint(("CBT: ===== Building Disk Map & Hook Tables =====\n"));
+
+	for (ULONG diskNum = 0; diskNum < MAX_DISKS; diskNum++) {
+
+		for (ULONG partNum = 0; partNum <= MAX_PARTITIONS; partNum++) {
+			WCHAR nameBuf[64];
+			UNICODE_STRING devName;
+
+			// 构建设备名
+			RtlStringCchPrintfW(
+				nameBuf,
+				RTL_NUMBER_OF(nameBuf),
+				L"\\Device\\Harddisk%lu\\Partition%1u",
+				diskNum,
+				partNum
+			);
+			RtlInitUnicodeString(&devName, nameBuf);
+
+			PFILE_OBJECT fileObj = NULL;
+			PDEVICE_OBJECT devObj = NULL;
+
+			status = IoGetDeviceObjectPointer(&devName, FILE_READ_ATTRIBUTES, &fileObj, &devObj);
+			if (!NT_SUCCESS(status)) {
+				if (partNum == 0) {
+					KdPrint(("CBT: Disk %lu not found (status=0x%08x). Stopping disk scan.\n",
+						diskNum, status));
+				}
+				break;  // 分区不存在, 停止扫描此磁盘的分区
+			}
+
+			PDRIVER_OBJECT drvObj = devObj->DriverObject;
+			KdPrint(("CBT: Found %ws -> DevObj=0x%p DrvObj=0x%p (driver=%ws)\n",
+				nameBuf, devObj, drvObj,
+				drvObj ? L"unknown" : L"NULL"));
+
+			// ---- 核心操作: FindOrCreateHookEntry ----
+			// 这会:
+			//   1. 检查 drvObj 是否已被 Hook (去重)
+			//   2. 如果没被 Hook, 保存 OriginalWrite 并执行 Hook
+			//   3. 返回 Hook 表条目指针
+
+			PHOOK_ENTRY hookEntry = FindOrCreateHookEntry(drvObj);
+			if (!hookEntry) {
+				KdPrint(("CBT: Cannot create hook entry for %ws. Skipping.\n", nameBuf));
+				ObDereferenceObject(fileObj);
+				continue;
+			}
+
+			// ---- 填充 Disk Map 表 ----
+			if (g_DiskMapCount < MAX_DISK_MAP_ENTRIES) {
+				PDISK_MAP_ENTRY mapEntry = &g_DiskMap[g_DiskMapCount];
+				mapEntry->DeviceObject = devObj;
+				mapEntry->HookEntry = hookEntry;           // ← 关键! 指向 Hook 表
+				mapEntry->DiskNumber = diskNum;
+				mapEntry->PartitionNumber = partNum;
+				mapEntry->IsPartition0 = (partNum == 0);
+				mapEntry->PartitionStartingOffset.QuadPart = 0; // 默认值, 需要用户态 IOCTL 补充
+
+				if (partNum == 0) {
+					// Partition0 = 整个磁盘, StartingOffset = 0
+					mapEntry->PartitionStartingOffset.QuadPart = 0;
+				}
+				// 分区的 StartingOffset 需要通过用户态 IOCTL 传入
+				// (参见 setup_partition_offsets.py)
+
+				g_DiskMapCount++;
+
+				KdPrint(("CBT: DiskMap[%lu] Disk=%lu Part=%lu DevObj=0x%p "
+					"HookEntry=0x%p OrigWrite=0x%p\n",
+					g_DiskMapCount - 1, diskNum, partNum,
+					devObj, hookEntry, (PVOID)hookEntry->OriginalWrite));
+			}
+
+			ObDereferenceObject(fileObj);
+		}
+	}
+
+	// ---- 打印汇总 ----
+	KdPrint(("CBT: ===== Summary =====\n"));
+	KdPrint(("CBT: Hooked drivers: %lu\n", g_HookListCount));
+	for (ULONG i = 0; i < g_HookListCount; i++) {
+		PHOOK_ENTRY e = &g_HookList[i];
+		KdPrint(("CBT:   [%lu] DriverObject=0x%p OrigWrite=0x%p "
+			"Installed=%s RefCount=%lu\n",
+			i, e->DriverObject, (PVOID)e->OriginalWrite,
+			e->HookInstalled ? "YES" : "NO", e->RefCount));
+	}
+
+	KdPrint(("CBT: Disk map entries: %lu\n", g_DiskMapCount));
+	for (ULONG i = 0; i < g_DiskMapCount; i++) {
+		PDISK_MAP_ENTRY e = &g_DiskMap[i];
+		KdPrint(("CBT:   [%lu] Disk=%lu Part=%lu DevObj=0x%p "
+			"HookEntryIdx=? StartOff=0x%llx\n",
+			i, e->DiskNumber, e->PartitionNumber,
+			e->DeviceObject, e->PartitionStartingOffset.QuadPart));
+	}
+
+	return STATUS_SUCCESS;
+}
+
+
+
+
