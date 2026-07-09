@@ -77,7 +77,7 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 
 	for (ULONG diskNum = 0; diskNum < MAX_DISKS; diskNum++) {
 
-		for (ULONG partNum = 0; partNum <= MAX_PARTITIONS; partNum++) {
+		for (ULONG partNum = 0; partNum < MAX_PARTITIONS; partNum++) {
 			WCHAR nameBuf[64];
 			UNICODE_STRING devName;
 

@@ -30,8 +30,8 @@ typedef struct _CBT_SLIST_ENTRY {
 #define MAX_CBT_SLIST_POOL  4096
 #define MAX_HOOKED_DRIVERS  8    // 最多 Hook 8 个不同的驱动
 #define MAX_DISK_MAP_ENTRIES 64   // 最多 64 个磁盘/分区设备
-#define MAX_DISKS           8    // 最多检查 8 个物理磁盘
-#define MAX_PARTITIONS      16   // 每磁盘最多 16 个分区
+#define MAX_DISKS           32    // 最多检查 32 个物理磁盘
+#define MAX_PARTITIONS      1   // 只需要监控Partition0就可以了
 
 
 // ========================================
