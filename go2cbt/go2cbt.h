@@ -56,6 +56,7 @@ typedef struct _DISK_MAP_ENTRY {
 	ULONG            DiskNumber;             // Harddisk%d 中的 %d
 	ULONG            PartitionNumber;         // Partition%d 中的 %d
 	LARGE_INTEGER    PartitionStartingOffset; // 分区在磁盘上的起始偏移
+	LARGE_INTEGER    PartitionLength;         // 分区在磁盘上的大小
 	BOOLEAN          IsPartition0;            // 是否代表整个磁盘
 } DISK_MAP_ENTRY, * PDISK_MAP_ENTRY;
 
@@ -81,3 +82,10 @@ VOID CbtUnload(PDRIVER_OBJECT DriverObject);
 
 PHOOK_ENTRY FindOrCreateHookEntry(PDRIVER_OBJECT DriverObject);
 NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject);
+
+NTSTATUS
+QueryPartitionInfoEx(
+	_In_ PDEVICE_OBJECT DeviceObject,
+	_Out_ PLARGE_INTEGER pStartingOffset,
+	_Out_ PLARGE_INTEGER pPartitionLength
+);

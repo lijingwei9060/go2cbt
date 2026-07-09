@@ -129,14 +129,16 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 				mapEntry->DiskNumber = diskNum;
 				mapEntry->PartitionNumber = partNum;
 				mapEntry->IsPartition0 = (partNum == 0);
-				mapEntry->PartitionStartingOffset.QuadPart = 0; // 默认值, 需要用户态 IOCTL 补充
 
-				if (partNum == 0) {
-					// Partition0 = 整个磁盘, StartingOffset = 0
+				status = QueryPartitionInfoEx(devObj,
+					&mapEntry->PartitionStartingOffset,
+					&mapEntry->PartitionLength);
+				if (!NT_SUCCESS(status)) {
+					KdPrint(("CBT: Failed to query partition info for %ws, using defaults", nameBuf));
+					// fallback 保持 0（和原来行为一致）
 					mapEntry->PartitionStartingOffset.QuadPart = 0;
+					mapEntry->PartitionLength.QuadPart = 0;
 				}
-				// 分区的 StartingOffset 需要通过用户态 IOCTL 传入
-				// (参见 setup_partition_offsets.py)
 
 				g_DiskMapCount++;
 
@@ -165,9 +167,11 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 	for (ULONG i = 0; i < g_DiskMapCount; i++) {
 		PDISK_MAP_ENTRY e = &g_DiskMap[i];
 		KdPrint(("CBT:   [%lu] Disk=%lu Part=%lu DevObj=0x%p "
-			"HookEntryIdx=? StartOff=0x%llx\n",
+			"HookEntryIdx=0x%p StartOff=0x%llx Length=0x%llx\n",
 			i, e->DiskNumber, e->PartitionNumber,
-			e->DeviceObject, e->PartitionStartingOffset.QuadPart));
+			e->DeviceObject, e->HookEntry,
+			e->PartitionStartingOffset.QuadPart,
+			e->PartitionLength.QuadPart));
 	}
 
 	return STATUS_SUCCESS;
@@ -176,3 +180,85 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 
 
 
+// ========================================
+// 获取分区信息: StartingOffset + PartitionLength
+//
+// 输入:  PDEVICE_OBJECT (已通过 IoGetDeviceObjectPointer 获取的设备对象)
+// 输出: pStartingOffset, pPartitionLength
+// 返回: NTSTATUS
+// ========================================
+NTSTATUS
+QueryPartitionInfoEx(
+	_In_ PDEVICE_OBJECT DeviceObject,
+	_Out_ PLARGE_INTEGER pStartingOffset,
+	_Out_ PLARGE_INTEGER pPartitionLength
+)
+{
+	if (!DeviceObject || !pStartingOffset || !pPartitionLength) {
+		return STATUS_INVALID_PARAMETER;
+	}
+
+	if (pStartingOffset) pStartingOffset->QuadPart = 0;
+	if (pPartitionLength) pPartitionLength->QuadPart = 0;
+
+	// ---- 安全检查: 确保在 PASSIVE_LEVEL ----
+	KIRQL currentIrql = KeGetCurrentIrql();
+	if (currentIrql != PASSIVE_LEVEL) {
+		KdPrint(("CBT-QUERY: Cannot query at IRQL %u, must be PASSIVE\n",
+			currentIrql));
+		return STATUS_INVALID_DEVICE_STATE;   // 不崩溃，优雅退出
+	}
+
+	PARTITION_INFORMATION_EX partInfoEx = { 0 };
+	IO_STATUS_BLOCK ioStatusBlock;
+	KEVENT completionEvent;
+
+	// ---- 使用事件做异步模式（更安全，避免线程阻塞问题）----
+	KeInitializeEvent(&completionEvent, SynchronizationEvent, FALSE);
+
+	PIRP irp = IoBuildDeviceIoControlRequest(
+		IOCTL_DISK_GET_PARTITION_INFO_EX,
+		DeviceObject,
+		NULL,
+		0,
+		&partInfoEx,
+		sizeof(PARTITION_INFORMATION_EX),
+		FALSE,
+		&completionEvent,       // ← 用事件，不依赖线程阻塞语义
+		&ioStatusBlock
+	);
+
+	if (!irp) {
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+
+	// ---- 引用设备栈顶层 ----
+	PDEVICE_OBJECT targetDevice = IoGetAttachedDeviceReference(DeviceObject);
+
+	// ---- 下发 IRP ----
+	IoCallDriver(targetDevice, irp);
+
+	// ---- 等待完成（仅在 PASSIVE_LEVEL 安全）----
+	// 使用超时防止永久挂起（30秒）
+	NTSTATUS waitStatus = KeWaitForSingleObject(
+		&completionEvent,
+		Executive,
+		KernelMode,
+		FALSE,               // 不可中断
+		&(LARGE_INTEGER){.QuadPart = -30 * 10000 * 1000 }  // -30秒(负数=相对时间)
+	);
+
+	ObDereferenceObject(targetDevice);
+
+	if (waitStatus == STATUS_TIMEOUT) {
+		KdPrint(("CBT-QUERY: Timeout waiting for partition info!\n"));
+		return STATUS_IO_TIMEOUT;
+	}
+
+	if (NT_SUCCESS(ioStatusBlock.Status)) {
+		if (pStartingOffset)   *pStartingOffset = partInfoEx.StartingOffset;
+		if (pPartitionLength)  *pPartitionLength = partInfoEx.PartitionLength;
+	}
+
+	return ioStatusBlock.Status;
+}

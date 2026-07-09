@@ -73,6 +73,8 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) 
 // ========================================
 VOID CbtUnload(PDRIVER_OBJECT DriverObject) {
 	UNREFERENCED_PARAMETER(DriverObject);
+	UNICODE_STRING symlinkName;
+	NTSTATUS status;
 	KdPrint(("CBT: ===== Unload: Restoring hooks =====\n"));
 
 	// ---- 按 Hook 表逐个恢复 OriginalWrite ----
@@ -132,6 +134,38 @@ VOID CbtUnload(PDRIVER_OBJECT DriverObject) {
 			KdPrint(("CBT: [%lu] Skipping restoration to avoid breaking other driver's hook\n", i));
 		}
 	}
+
+
+	// =============================================
+	// Step 2: 删除符号链接 ← 缺失！这是主因
+	// =============================================
+	RtlInitUnicodeString(&symlinkName, CBT_SYMLINK_NAME);
+	status = IoDeleteSymbolicLink(&symlinkName);
+	if (NT_SUCCESS(status)) {
+		KdPrint(("CBT: Symbolic link %ws deleted\n", CBT_SYMLINK_NAME));
+	}
+	else {
+		KdPrint(("CBT: Failed to delete symbolic link! status=0x%08x\n", status));
+		// 即使失败也继续尝试删除设备
+	}
+
+	// =============================================
+	// Step 3: 删除控制设备对象 ← 缺失！
+	// =============================================
+	if (g_ControlDevice) {
+		IoDeleteDevice(g_ControlDevice);
+		g_ControlDevice = NULL;
+		KdPrint(("CBT: Control device deleted\n"));
+	}
+
+	// =============================================
+	// Step 4: 清理全局状态 (可选但推荐)
+	// =============================================
+	RtlZeroMemory(g_HookList, sizeof(g_HookList));
+	g_HookListCount = 0;
+	RtlZeroMemory(g_DiskMap, sizeof(g_DiskMap));
+	g_DiskMapCount = 0;
+
 
 	KdPrint(("CBT: ===== Unload complete =====\n"));
 }

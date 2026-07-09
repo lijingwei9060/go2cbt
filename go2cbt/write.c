@@ -44,15 +44,14 @@ NTSTATUS HwReadWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 		if (hookEntry && hookEntry->HookInstalled) {
 			// 找到了对应的 Hook 条目, 但磁盘映射未知
 			// 透传, 但 KdPrint 记录这个 IRP 以便调试
-			KdPrint(("CBT-WRITE: Unknown disk device 0x%p (DrvObj=0x%p), "
+			/*KdPrint(("CBT-WRITE: Unknown disk device 0x%p (DrvObj=0x%p), "
 				"Offset=0x%llx Len=0x%lx. Passing through.\n",
-				DeviceObject, drvObj, byteOffset.QuadPart, byteCount));
+				DeviceObject, drvObj, byteOffset.QuadPart, byteCount));*/
 			return hookEntry->OriginalWrite(DeviceObject, Irp);
 		}
 
 		// 完全未知, 直接用当前 MajorFunction 值 (可能已被我们 Hook 了)
-		KdPrint(("CBT-WRITE: Completely unknown device 0x%p. Emergency passthrough.\n",
-			DeviceObject));
+		KdPrint(("CBT-WRITE: Completely unknown device 0x%p. Emergency passthrough.\n", DeviceObject));
 		return drvObj->MajorFunction[IRP_MJ_WRITE](DeviceObject, Irp);
 		// 注意: 这里不能调 HwReadWrite, 否则死循环!
 		// drvObj->MajorFunction[IRP_MJ_WRITE] 可能就是 HwReadWrite
@@ -65,8 +64,7 @@ NTSTATUS HwReadWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 
 	// ---- Step 3: 偏移转换 ----
 	LARGE_INTEGER diskAbsoluteOffset;
-	diskAbsoluteOffset.QuadPart = byteOffset.QuadPart
-		+ diskEntry->PartitionStartingOffset.QuadPart;
+	diskAbsoluteOffset.QuadPart = byteOffset.QuadPart + diskEntry->PartitionStartingOffset.QuadPart;
 
 	if (InterlockedIncrement(&g_WriteDebugCount) <= 100)
 	{
