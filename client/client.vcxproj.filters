@@ -24,12 +24,30 @@
     <ClCompile Include="logger.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="disk_query.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="vss_snapshot.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="fullback.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="firmware.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="logger.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="disk_query.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="vss_snapshot.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="fullback.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
