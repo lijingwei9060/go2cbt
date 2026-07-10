@@ -7,6 +7,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "go2cbt", "go2cbt\go2cbt.vcx
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "cbtctl", "cbtctl\cbtctl.vcxproj", "{00633E80-29ED-4D4E-8B8C-AED3E4893EE0}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "client", "client\client.vcxproj", "{50B414E2-C100-43CE-A2FB-6341E5496E0B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|ARM64 = Debug|ARM64
@@ -35,6 +37,14 @@ Global
 		{00633E80-29ED-4D4E-8B8C-AED3E4893EE0}.Release|ARM64.Build.0 = Release|x64
 		{00633E80-29ED-4D4E-8B8C-AED3E4893EE0}.Release|x64.ActiveCfg = Release|x64
 		{00633E80-29ED-4D4E-8B8C-AED3E4893EE0}.Release|x64.Build.0 = Release|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Debug|ARM64.ActiveCfg = Debug|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Debug|ARM64.Build.0 = Debug|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Debug|x64.ActiveCfg = Debug|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Debug|x64.Build.0 = Debug|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Release|ARM64.ActiveCfg = Release|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Release|ARM64.Build.0 = Release|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Release|x64.ActiveCfg = Release|x64
+		{50B414E2-C100-43CE-A2FB-6341E5496E0B}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
