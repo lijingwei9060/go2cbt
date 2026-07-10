@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #include <ntddk.h>
 #include <ntdddisk.h>
 #include <ntddstor.h>
@@ -7,13 +7,30 @@
 #define CBT_DEVICE_NAME     L"\\Device\\CbtMonitor"
 #define CBT_SYMLINK_NAME    L"\\DosDevices\\CbtMonitor"
 
-// IOCTL (Óë verify_hook_test.cpp ¶ÔÓ¦)
+// æ¯ä¸ªè¿½è¸ªå—å¤§å°: 1MB
+// å¯é…ç½®, è¶Šå°è¶Šç²¾ç¡®ä½†å†…å­˜è¶Šå¤§
+#define CBT_BLOCK_SIZE              (1024 * 1024)
+
+// Pool tag for CBT bitmap memory allocation
+#define CBT_BITMAP_POOL_TAG         'tBCG'
+
+// IOCTL (ä¸Ž verify_hook_test.cpp å¯¹åº”)
 #define IOCTL_QUERY_HOOK_STATUS  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_QUERY_WRITE_STATS  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_QUERY_CBT_DATA     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
-#define IOCTL_RESET_STATS     
+#define IOCTL_RESET_CBT_DATA    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)    
 
-// CBT ±ä¸ü¼ÇÂ¼
+
+// ---- CBT State per disk (one bitmap) ----
+typedef struct _DISK_CBT_STATE {
+	RTL_BITMAP      Bitmap;             // ä½å›¾ç»“æž„ä½“
+	PULONG          Buffer;             // ä½å›¾å†…å­˜ (NonPagedPool)
+	ULONGLONG       TotalBits;          // æ€»bitæ•°é‡ï¼Œä¸€ä¸ªbitä»£è¡¨ä¸€ä¸ªå—
+	ULONGLONG       TotalBytes;         // æ€»å­—èŠ‚æ•°ï¼Œä¸ºäº†å¯¹å…¶Long(4byte),
+	KSPIN_LOCK      Lock;               // è‡ªæ—‹é”: ä¿æŠ¤ Bitmap çš„ Set/Clear å¹¶å‘è®¿é—®
+} DISK_CBT_STATE, * PDISK_CBT_STATE;
+
+// CBT å˜æ›´è®°å½•
 typedef struct _CBT_RECORD {
 	ULONG DiskNumber;
 	LARGE_INTEGER ByteOffset;
@@ -21,47 +38,60 @@ typedef struct _CBT_RECORD {
 	ULONG SequenceNumber;
 } CBT_RECORD, * PCBT_RECORD;
 
-// SLIST Á´±í½Úµã (ÎÞËø¶ÓÁÐ)
+// SLIST é“¾è¡¨èŠ‚ç‚¹ (æ— é”é˜Ÿåˆ—)
 typedef struct _CBT_SLIST_ENTRY {
 	SLIST_ENTRY ListEntry;
 	CBT_RECORD  Record;
 } CBT_SLIST_ENTRY, * PCBT_SLIST_ENTRY;
 
 #define MAX_CBT_SLIST_POOL  4096
-#define MAX_HOOKED_DRIVERS  8    // ×î¶à Hook 8 ¸ö²»Í¬µÄÇý¶¯
-#define MAX_DISK_MAP_ENTRIES 64   // ×î¶à 64 ¸ö´ÅÅÌ/·ÖÇøÉè±¸
-#define MAX_DISKS           32    // ×î¶à¼ì²é 32 ¸öÎïÀí´ÅÅÌ
-#define MAX_PARTITIONS      1   // Ö»ÐèÒª¼à¿ØPartition0¾Í¿ÉÒÔÁË
+#define MAX_HOOKED_DRIVERS  8    // æœ€å¤š Hook 8 ä¸ªä¸åŒçš„é©±åŠ¨
+#define MAX_DISK_MAP_ENTRIES 64   // æœ€å¤š 64 ä¸ªç£ç›˜/åˆ†åŒºè®¾å¤‡
+#define MAX_DISKS           32    // æœ€å¤šæ£€æŸ¥ 32 ä¸ªç‰©ç†ç£ç›˜
+#define MAX_PARTITIONS      1   // åªéœ€è¦ç›‘æŽ§Partition0å°±å¯ä»¥äº†
 
 
 // ========================================
-// Êý¾Ý½á¹¹Éè¼Æ - Á½¸ö¶ÀÁ¢µÄ±í
+// æ•°æ®ç»“æž„è®¾è®¡ - ä¸¤ä¸ªç‹¬ç«‹çš„è¡¨
 // ========================================
 
-// Hook ±í: °´ DriverObject ´æ´¢ (Ã¿¸ö±» Hook µÄÇý¶¯Ò»Ìõ¼ÇÂ¼)
-// Õâ¸ö±í½â¾ö "OriginalWrite ²»Ö¹Ò»¸ö" µÄÎÊÌâ
+// Hook è¡¨: æŒ‰ DriverObject å­˜å‚¨ (æ¯ä¸ªè¢« Hook çš„é©±åŠ¨ä¸€æ¡è®°å½•)
+// è¿™ä¸ªè¡¨è§£å†³ "OriginalWrite ä¸æ­¢ä¸€ä¸ª" çš„é—®é¢˜
 typedef struct _HOOK_ENTRY {
-	PDRIVER_OBJECT   DriverObject;           // ±» Hook µÄÇý¶¯¶ÔÏó (²éÕÒ¼ü)
-	PDRIVER_DISPATCH OriginalWrite;           // ¸ÃÇý¶¯µÄÔ­Ê¼ IRP_MJ_WRITE º¯Êý
-	BOOLEAN          HookInstalled;           // ÊÇ·ñÒÑ°²×° Hook
-	ULONG            RefCount;                // ¶àÉÙ¸ö´ÅÅÌÉè±¸ÒýÓÃ´ËÇý¶¯
-	LARGE_INTEGER    HookInstallTime;         // Hook °²×°Ê±¼ä
+	PDRIVER_OBJECT   DriverObject;           // è¢« Hook çš„é©±åŠ¨å¯¹è±¡ (æŸ¥æ‰¾é”®)
+	PDRIVER_DISPATCH OriginalWrite;           // è¯¥é©±åŠ¨çš„åŽŸå§‹ IRP_MJ_WRITE å‡½æ•°
+	BOOLEAN          HookInstalled;           // æ˜¯å¦å·²å®‰è£… Hook
+	ULONG            RefCount;                // å¤šå°‘ä¸ªç£ç›˜è®¾å¤‡å¼•ç”¨æ­¤é©±åŠ¨
+	LARGE_INTEGER    HookInstallTime;         // Hook å®‰è£…æ—¶é—´
 } HOOK_ENTRY, * PHOOK_ENTRY;
 
-// ´ÅÅÌÓ³Éä±í: °´ DeviceObject ´æ´¢ (Ã¿¸ö´ÅÅÌ/·ÖÇøÉè±¸Ò»Ìõ¼ÇÂ¼)
-// Õâ¸ö±í½â¾ö "DiskNum ±£´æÔÚÄÄÀï" ºÍ "Æ«ÒÆ×ª»»" µÄÎÊÌâ
+// ç£ç›˜æ˜ å°„è¡¨: æŒ‰ DeviceObject å­˜å‚¨ (æ¯ä¸ªç£ç›˜/åˆ†åŒºè®¾å¤‡ä¸€æ¡è®°å½•)
+// è¿™ä¸ªè¡¨è§£å†³ "DiskNum ä¿å­˜åœ¨å“ªé‡Œ" å’Œ "åç§»è½¬æ¢" çš„é—®é¢˜
 typedef struct _DISK_MAP_ENTRY {
-	PDEVICE_OBJECT   DeviceObject;           // IRP ÖÐµÄ DeviceObject ²ÎÊý (²éÕÒ¼ü)
-	PHOOK_ENTRY      HookEntry;              // ¡ú Ö¸Ïò Hook ±íÖÐµÄ¶ÔÓ¦ÌõÄ¿ (ºËÐÄ!)
-	ULONG            DiskNumber;             // Harddisk%d ÖÐµÄ %d
-	ULONG            PartitionNumber;         // Partition%d ÖÐµÄ %d
-	LARGE_INTEGER    PartitionStartingOffset; // ·ÖÇøÔÚ´ÅÅÌÉÏµÄÆðÊ¼Æ«ÒÆ
-	LARGE_INTEGER    PartitionLength;         // ·ÖÇøÔÚ´ÅÅÌÉÏµÄ´óÐ¡
-	BOOLEAN          IsPartition0;            // ÊÇ·ñ´ú±íÕû¸ö´ÅÅÌ
+	PDEVICE_OBJECT   DeviceObject;           // IRP ä¸­çš„ DeviceObject å‚æ•° (æŸ¥æ‰¾é”®)
+	PHOOK_ENTRY      HookEntry;              // â†’ æŒ‡å‘ Hook è¡¨ä¸­çš„å¯¹åº”æ¡ç›® (æ ¸å¿ƒ!)
+	ULONG            DiskNumber;             // Harddisk%d ä¸­çš„ %d
+	ULONG            PartitionNumber;         // Partition%d ä¸­çš„ %d
+	LARGE_INTEGER    PartitionStartingOffset; // åˆ†åŒºåœ¨ç£ç›˜ä¸Šçš„èµ·å§‹åç§»
+	LARGE_INTEGER    PartitionLength;         // åˆ†åŒºåœ¨ç£ç›˜ä¸Šçš„å¤§å°
+	BOOLEAN          IsPartition0;            // æ˜¯å¦ä»£è¡¨æ•´ä¸ªç£ç›˜
+	DISK_CBT_STATE   CbtState;                // æ¯ä¸ªåˆ†åŒºçš„ CBT ä½å›¾çŠ¶æ€ (RTL_BITMAP + Lock)
 } DISK_MAP_ENTRY, * PDISK_MAP_ENTRY;
 
+// ---- è¾“å…¥: ç”¨æˆ·ä¼ ç»™é©±åŠ¨çš„å‚æ•° ----
+typedef struct _CBT_IOCTL_INPUT {
+	ULONG DeviceNumber;        // ç£ç›˜ç¼–å·: 0=Harddisk0, 1=Harddisk1, ...
+} CBT_IOCTL_INPUT, * PCBT_IOCTL_INPUT;
 
-// È«¾Ö±äÁ¿
+// ---- Query è¾“å‡º: é©±åŠ¨è¿”å›žç»™ç”¨æˆ·çš„ CBT æ•°æ® ----
+typedef struct _CBT_QUERY_OUTPUT {
+	ULONGLONG   TotalBits;            // ä½å›¾æ€» bit æ•° = TotalBlocks (æ¯ä¸ªå—ä¸€ä¸ªbit)
+	ULONGLONG   TotalBytes;           // ä½å›¾ç¼“å†²åŒºå®žé™…å­—èŠ‚å¤§å° ((TotalBits+31)/32 * 4)
+	// åŽé¢ç´§è·Ÿç€å®žé™…çš„ä½å›¾æ•°æ® (å˜é•¿)
+	UCHAR BitmapData[1];             // ä½å›¾åŽŸå§‹æ•°æ®
+} CBT_QUERY_OUTPUT, * PCBT_QUERY_OUTPUT;
+
+// å…¨å±€å˜é‡
 extern PDEVICE_OBJECT g_ControlDevice;
 extern HOOK_ENTRY     g_HookList[MAX_HOOKED_DRIVERS];
 extern ULONG          g_HookListCount;
@@ -88,4 +118,75 @@ QueryPartitionInfoEx(
 	_In_ PDEVICE_OBJECT DeviceObject,
 	_Out_ PLARGE_INTEGER pStartingOffset,
 	_Out_ PLARGE_INTEGER pPartitionLength
+);
+
+NTSTATUS
+InitCbtState(
+	_Out_ PDISK_CBT_STATE cbtState,
+	_In_  ULONGLONG diskSizeBytes
+);
+
+// ================================================
+// MarkBlockChanged: Mark a range of disk blocks as "changed" in the CBT bitmap.
+//
+// This is the HOT PATH - called on every single disk WRITE operation.
+// The critical section (spinlock held) is only 1 instruction: RlSetBits().
+//
+// Thread safety:
+//   - KSPIN_LOCK protects against concurrent RlSetBits vs RlClearAllBits
+//   - Lost set due to race is unacceptable (would cause data corruption in backup),
+//     so we always acquire the lock before modifying the bitmap.
+// ================================================
+static __inline void MarkBlockChanged(
+	_In_ PDISK_CBT_STATE cbtState,
+	_In_ ULONGLONG offset,
+	_In_ ULONG length
+)
+{
+	// ===== ç¬¬ä¸€é“é˜²çº¿: æ£€æŸ¥ CbtState æ˜¯å¦å·²æ­£ç¡®åˆå§‹åŒ– =====
+	if (!cbtState || !cbtState->Buffer || cbtState->TotalBits == 0) {
+		// CbtState æœªåˆå§‹åŒ–æˆ–åˆå§‹åŒ–å¤±è´¥(Buffer=NULL)
+		// â†’ å®‰å…¨è·³è¿‡ï¼Œåªåšé€ä¼ ï¼Œä¸æ ‡è®°ä»»ä½•å—
+		return;   // âœ“ ä¸å´©æºƒï¼Œä¸å½±å“å†™æ“ä½œ
+	}
+
+	if (offset >= (cbtState->TotalBits * CBT_BLOCK_SIZE)) {
+		// Write offset beyond disk bounds (should not happen, but be safe)
+		return;
+	}
+
+	ULONGLONG startBlock = offset / CBT_BLOCK_SIZE;
+	ULONGLONG endBlock = (offset + (ULONGLONG)length - 1) / CBT_BLOCK_SIZE;
+
+	if (endBlock >= cbtState->TotalBits) {
+		endBlock = cbtState->TotalBits - 1;
+	}
+
+	if (startBlock > endBlock) {
+		return;  // Zero-length or invalid range
+	}
+
+	// ---- Acquire spinlock, mark bits, release ----
+	// Critical section = exactly 1 line of code (~10-20ns)
+	// Disk I/O itself takes microseconds to milliseconds, so this overhead is negligible
+	KIRQL oldIrql = 0;
+	KeAcquireSpinLock(&cbtState->Lock, &oldIrql);
+
+	RtlSetBits(&cbtState->Bitmap, (ULONG)startBlock, (ULONG)(endBlock - startBlock + 1));
+
+	KeReleaseSpinLock(&cbtState->Lock, oldIrql);
+
+}
+
+
+void CleanupCbtState(_In_ PDISK_CBT_STATE cbtState);
+static NTSTATUS HandleIoctlQuery(
+	_In_ PIRP Irp,
+	_In_ PIO_STACK_LOCATION irpSp,
+	_Out_ PULONG pBytesReturned
+);
+static NTSTATUS HandleIoctlReset(
+	_In_ PIRP Irp,
+	_In_ PIO_STACK_LOCATION irpSp,
+	_Out_ PULONG pBytesReturned
 );

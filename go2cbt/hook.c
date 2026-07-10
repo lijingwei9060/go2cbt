@@ -140,6 +140,24 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 					mapEntry->PartitionLength.QuadPart = 0;
 				}
 
+				status = InitCbtState(&mapEntry->CbtState, mapEntry->PartitionLength.QuadPart);
+				if (!NT_SUCCESS(status)) {
+					// ⚠️ 策略选择（二选一）:
+
+					// 【方案 A】降级运行: 该磁盘不追踪 CBT，但仍然 Hook 写入并透传
+					//   → 优点: 驱动仍然工作，其他磁盘正常追踪
+					//   → 缺点: 这个磁盘的变更不会被记录（增量备份会回退到全量备份）
+					KdPrint(("CBT: WARNING: Disk %lu CBT init FAILED (0x%08x). Running without CBT tracking for this disk.\n", diskNum, status));
+					// mapEntry->CbtState 保持零初始化状态 (Buffer=NULL)
+					// 继续往下走，g_DiskMapCount++
+
+					// 【方案 B】致命失败: 整个驱动不加载
+					//   → 优点: 要么全有要么全无，行为可预测
+					//   → 缺点: 因为一个位图分配失败导致整个驱动不可用
+					//
+					// return status;  // 直接向上冒泡，DriverEntry 返回失败
+				}
+
 				g_DiskMapCount++;
 
 				KdPrint(("CBT: DiskMap[%lu] Disk=%lu Part=%lu DevObj=0x%p "
@@ -157,6 +175,7 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 	KdPrint(("CBT: Hooked drivers: %lu\n", g_HookListCount));
 	for (ULONG i = 0; i < g_HookListCount; i++) {
 		PHOOK_ENTRY e = &g_HookList[i];
+		UNREFERENCED_PARAMETER(e);
 		KdPrint(("CBT:   [%lu] DriverObject=0x%p OrigWrite=0x%p "
 			"Installed=%s RefCount=%lu\n",
 			i, e->DriverObject, (PVOID)e->OriginalWrite,
@@ -166,6 +185,7 @@ NTSTATUS BuildDiskAndHookTables(PDRIVER_OBJECT DriverObject) {
 	KdPrint(("CBT: Disk map entries: %lu\n", g_DiskMapCount));
 	for (ULONG i = 0; i < g_DiskMapCount; i++) {
 		PDISK_MAP_ENTRY e = &g_DiskMap[i];
+		UNREFERENCED_PARAMETER(e);
 		KdPrint(("CBT:   [%lu] Disk=%lu Part=%lu DevObj=0x%p "
 			"HookEntryIdx=0x%p StartOff=0x%llx Length=0x%llx\n",
 			i, e->DiskNumber, e->PartitionNumber,

@@ -99,6 +99,7 @@
     <ClInclude Include="go2cbt.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="bitmap.c" />
     <ClCompile Include="dispatch.c" />
     <ClCompile Include="go2cbt.c" />
     <ClCompile Include="hook.c" />

@@ -158,8 +158,15 @@ VOID CbtUnload(PDRIVER_OBJECT DriverObject) {
 		KdPrint(("CBT: Control device deleted\n"));
 	}
 
+	// Step 4: 释放 CBT 位图内存  ← 在这里调用
+	for (ULONG i = 0; i < g_DiskMapCount; i++) {
+		CleanupCbtState(&g_DiskMap[i].CbtState);   // ← 逐个清理
+	}
+	KdPrint(("CBT: CBT bitmap memory released for %lu disk(s)\n", g_DiskMapCount));
+
+
 	// =============================================
-	// Step 4: 清理全局状态 (可选但推荐)
+	// Step 5: 清理全局状态 (可选但推荐)
 	// =============================================
 	RtlZeroMemory(g_HookList, sizeof(g_HookList));
 	g_HookListCount = 0;

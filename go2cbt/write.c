@@ -84,6 +84,8 @@ NTSTATUS HwReadWrite(PDEVICE_OBJECT DeviceObject, PIRP Irp) {
 	// DiskNum + DiskAbsoluteOffset + ByteCount = 完整变更信息
 	// (存入 SLIST 等, 此处省略)
 
+	MarkBlockChanged(&diskEntry->CbtState, (ULONGLONG)diskAbsoluteOffset.QuadPart, byteCount);
+
 	// ---- Step 5: 透传到对应的原始函数 ----
 	// 关键: 每个磁盘用的是自己的 OriginalWrite!
 	// disk.sys 管理的磁盘 → disk.sys 的原始写函数
