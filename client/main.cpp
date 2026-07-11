@@ -6,6 +6,7 @@
 #include "DiskScanner.h"
 #include "DiskParser.h"
 #include "VolumeMapper.h"
+#include "BackupEngine.h"
 
 using namespace BackupCommon;
 using namespace BackupSecurity;
@@ -304,10 +305,19 @@ void PrintHelp()
 	wprintf(L"Usage:\n");
 	wprintf(L"  client.exe query_disks              Enumerate all physical disks (fast scan)\n");
 	wprintf(L"  client.exe query_disk  <devno>      Detailed disk layout + volume mapping\n");
+	wprintf(L"  client.exe backup <all|devno>       Backup disk(s) to server\n");
+	wprintf(L"         --cbt        Use CBT incremental tracking\n");
+	wprintf(L"         --serverip   Server IP address\n");
+	wprintf(L"         --port       Server port\n");
+	wprintf(L"         --dryrun     Simulated mode (no server)\n");
+	wprintf(L"         --retry N    Retry count (default 3)\n");
+	wprintf(L"         --state-dir  State file directory\n");
 	wprintf(L"\n");
 	wprintf(L"Examples:\n");
 	wprintf(L"  client.exe query_disks\n");
 	wprintf(L"  client.exe query_disk  0\n");
+	wprintf(L"  client.exe backup 0 --serverip 192.168.1.100 --port 9000\n");
+	wprintf(L"  client.exe backup all --cbt --dryrun\n");
 	wprintf(L"\n");
 }
 
@@ -410,6 +420,95 @@ int wmain(int argc, wchar_t* argv[])
 	// ============================================================
 	// 未知命令
 	// ============================================================
+	// ============================================================
+	// backup <all|devno>: backup disk(s) to server
+	// ============================================================
+	if (wcscmp(argv[1], L"backup") == 0)
+	{
+		if (argc < 3)
+		{
+			wprintf(L"[ERROR] Missing target disk number\n");
+			PrintHelp();
+			Logger::Instance().Shutdown();
+			return -1;
+		}
+
+		BackupEngine::BackupConfig config;
+		std::vector<int> targets;
+
+		// parse target
+		if (wcscmp(argv[2], L"all") == 0)
+		{
+			for (int d = 0; d < 8; d++) targets.push_back(d);
+		}
+		else
+		{
+			targets.push_back(_wtoi(argv[2]));
+		}
+
+		// parse options
+		for (int i = 3; i < argc; i++)
+		{
+			if (wcscmp(argv[i], L"--cbt") == 0)
+				config.UseCbt = true;
+			else if (wcscmp(argv[i], L"--dryrun") == 0)
+				config.DryRun = true;
+			else if (wcscmp(argv[i], L"--serverip") == 0 && i + 1 < argc)
+			{
+				i++;
+				char ipBuf[64];
+				WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, ipBuf, sizeof(ipBuf), nullptr, nullptr);
+				config.ServerIp = ipBuf;
+			}
+			else if (wcscmp(argv[i], L"--port") == 0 && i + 1 < argc)
+				config.Port = (uint16_t)_wtoi(argv[++i]);
+			else if (wcscmp(argv[i], L"--retry") == 0 && i + 1 < argc)
+				config.RetryCount = _wtoi(argv[++i]);
+			else if (wcscmp(argv[i], L"--state-dir") == 0 && i + 1 < argc)
+				config.StateDir = argv[++i];
+		}
+
+		// validate
+		if (!config.DryRun && config.ServerIp.empty())
+		{
+			wprintf(L"[ERROR] --serverip required (or use --dryrun)\n");
+			Logger::Instance().Shutdown();
+			return -1;
+		}
+		if (!config.DryRun && config.Port == 0)
+		{
+			wprintf(L"[ERROR] --port required (or use --dryrun)\n");
+			Logger::Instance().Shutdown();
+			return -1;
+		}
+
+		// show config
+		wprintf(L"\n========================================================\n");
+		wprintf(L"  BACKUP %s%s\n",
+			config.UseCbt ? L"INCREMENTAL (CBT)" : L"FULL",
+			config.DryRun ? L" [DRY RUN]" : L"");
+		wprintf(L"========================================================\n");
+		wprintf(L"  Targets : "); for (auto d : targets) wprintf(L"Disk%d ", d); wprintf(L"\n");
+		if (!config.DryRun) wprintf(L"  Server  : %hs:%hu\n", config.ServerIp.c_str(), config.Port);
+		wprintf(L"  Retry   : %d\n  State   : %s\n\n", config.RetryCount, config.StateDir.c_str());
+
+		// run backup
+		BackupEngine::BackupEngine engine;
+		std::vector<BackupEngine::BackupStats> stats;
+		if (engine.Run(config, targets, stats))
+		{
+			wprintf(L"\n  BACKUP COMPLETE\n");
+			for (auto& s : stats)
+				wprintf(L"  Disk%d: sent=%llu acked=%llu\n", s.DevNo, s.SentBlocks, s.AckedBlocks);
+		}
+		else
+			wprintf(L"\n  BACKUP FAILED\n");
+		wprintf(L"\n");
+
+		Logger::Instance().Shutdown();
+		return 0;
+	}
+
 	wprintf(L"[ERROR] Unknown command: %s\n", argv[1]);
 	PrintHelp();
 	Logger::Instance().Shutdown();
