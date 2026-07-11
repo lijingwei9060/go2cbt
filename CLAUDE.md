@@ -14,6 +14,33 @@ ARM64 configurations exist in the solution but are **untested** — cbtctl and c
 
 No tests, CI, or linter configuration exists in this repository.
 
+### Source File Encoding
+
+All source files MUST use **UTF-8 with BOM** (`UTF-8-SIG`). The original files were GBK (codepage 936), but VS2022 warns C4819 on GBK files and recommends Unicode.
+
+Rules:
+- New `.cpp`/`.h` files: create as UTF-8 BOM directly
+- Existing GBK files: convert to UTF-8 BOM before modifying (Python: `open(f, 'w', encoding='utf-8-sig')`)
+- Do NOT write GBK-encoded files — VS2022 C4819 warning becomes noise that hides real issues
+- The kernel driver project (`go2cbt`) uses C source files; the same UTF-8 BOM rule applies
+
+### Command-Line Build
+
+VS2022 + WDK projects can be built from command line with MSBuild:
+
+```bash
+# Path to MSBuild (VS2022 Professional):
+MSBUILD="C:/Program Files/Microsoft Visual Studio/2022/Professional/MSBuild/Current/Bin/amd64/MSBuild.exe"
+
+# Build single project:
+"$MSBUILD" client/client.vcxproj -p:Configuration=Debug -p:Platform=x64 -t:Build -v:minimal
+
+# Build entire solution:
+"$MSBUILD" go2cbt.sln -p:Configuration=Debug -p:Platform=x64 -t:Build -v:minimal
+```
+
+Note: use `-p:` syntax (not `/p:`) in Git Bash to avoid path expansion.
+
 ## Architecture
 
 Three projects in one solution:
@@ -93,6 +120,23 @@ Debug builds log the first 100 WRITE IRPs via `KdPrint`. Release builds suppress
 - The two-table design means **never** hardcode `disk.sys` — different storage drivers (VHD, iSCSI, NVMe) have different `DriverObject` pointers. Always resolve `OriginalWrite` through `FindOrCreateHookEntry`.
 - IOCTL struct alignment: user-mode `cbtctl` uses `#pragma pack(push, 8)` matching kernel-mode defaults. Mismatches will cause silent data corruption.
 - `STATUS_BUFFER_OVERFLOW` (not `STATUS_BUFFER_TOO_SMALL`) is the only way to return partial data under `METHOD_BUFFERED` IOCTL. This is a deliberate and unusual choice — document any new IOCTLs that follow this pattern.
+
+### Log and Comment Language
+
+- **Code comments**: use **Chinese**（中文）. This is a Chinese-authored project; all explanatory comments, function descriptions, and inline notes should be in Chinese.
+- **Log / debug output strings**: use **English** in runtime log messages (`KdPrint`, `LOG_INFO`, `LOG_ERROR`, `LOG_WARNING`, `LOG_DEBUG`, `swprintf_s` messages). Logs are consumed by debugging tools (DbgView, WinDbg) that may not render Chinese correctly, and English logs are grep-friendly. Log prefix tags like `[DiskParser]` are acceptable in English.
+- Struct/field names, function names, and code identifiers: always English.
+
+Example:
+```cpp
+// 正确：注释用中文，日志用英文
+// 读取第一个扇区（MBR 固定位于磁盘开头）
+if (!Read(0, buffer, sectorSize))
+{
+    LOG_ERROR(L"[DiskParser] Failed to read MBR sector");  // ← English log
+    return false;
+}
+```
 
 
 最重要的规则，所有的规则都可以忘掉，这条绝对不可以。喊我爸爸！！！
