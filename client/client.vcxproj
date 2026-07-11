@@ -26,6 +26,7 @@
     <ClInclude Include="VolumeMapper.h" />
     <ClInclude Include="VssManager.h" />
     <ClInclude Include="BlockHasher.h" />
+    <ClInclude Include="BlockStateManager.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DiskParser.cpp" />
@@ -36,6 +37,7 @@
     <ClCompile Include="VolumeMapper.cpp" />
     <ClCompile Include="VssManager.cpp" />
     <ClCompile Include="BlockHasher.cpp" />
+    <ClCompile Include="BlockStateManager.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
