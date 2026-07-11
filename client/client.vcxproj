@@ -18,6 +18,19 @@
       <Platform>x64</Platform>
     </ProjectConfiguration>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="DiskParser.h" />
+    <ClInclude Include="DiskScanner.h" />
+    <ClInclude Include="Logger.h" />
+    <ClInclude Include="PrivilegeManager.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="DiskParser.cpp" />
+    <ClCompile Include="DiskScanner.cpp" />
+    <ClCompile Include="Logger.cpp" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="PrivilegeManager.cpp" />
+  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
