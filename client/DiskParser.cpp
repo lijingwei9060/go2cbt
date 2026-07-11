@@ -361,13 +361,18 @@ namespace Disk
 {
 	uint32_t sectorSize = layout.Disk.SectorSize;
 
-	// 读取 GPT Header（位于 LBA 1，即偏移 = 1 * 扇区大小）
-	GPTHeader header{};
-	if (!Read(sectorSize, &header, sizeof(header)))
+	// 读取 GPT Header（位于 LBA 1）
+	// 注意：物理磁盘读取必须扇区对齐，sizeof(GPTHeader)=92 不是扇区大小的整数倍
+	// 因此先读取完整扇区到缓冲区，再从中提取 Header
+	BYTE gptSector[4096] = {};
+	if (!Read(sectorSize, gptSector, sectorSize))
 	{
-		LOG_ERROR(L"[DiskParser] 读取 GPT Header 失败");
+		LOG_ERROR(L"[DiskParser] 读取 GPT Header 扇区失败");
 		return false;
 	}
+
+	GPTHeader header{};
+	memcpy(&header, gptSector, sizeof(GPTHeader));
 
 	// 验证 GPT 签名 "EFI PART"
 	if (memcmp(header.Signature, "EFI PART", 8) != 0)
