@@ -23,6 +23,7 @@
     <ClInclude Include="DiskScanner.h" />
     <ClInclude Include="Logger.h" />
     <ClInclude Include="PrivilegeManager.h" />
+    <ClInclude Include="VolumeMapper.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DiskParser.cpp" />
@@ -30,6 +31,7 @@
     <ClCompile Include="Logger.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="PrivilegeManager.cpp" />
+    <ClCompile Include="VolumeMapper.cpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

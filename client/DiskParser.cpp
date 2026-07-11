@@ -169,6 +169,130 @@ namespace Disk
 		}
 	}
 
+	//
+	// GPT 分区类型预分类（根据 TypeGuid 判断系统保留分区）
+	// MSR 等保留分区不需要读取 VBR，直接标记
+	//
+	void DiskParser::DetectPartitionContentGpt(PartitionInfo& p)
+	{
+		// Known GPT partition type GUIDs
+		// ESP (EFI System Partition): C12A7328-F81E-11D2-BA4B-00A0C93EC93B
+		static const GUID ESP_GUID =
+			{0xC12A7328, 0xF81E, 0x11D2, {0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9, 0x3B}};
+		// MSR (Microsoft Reserved Partition): E3C9E316-0B5C-4DB8-817D-F92DF00215AE
+		static const GUID MSR_GUID =
+			{0xE3C9E316, 0x0B5C, 0x4DB8, {0x81, 0x7D, 0xF9, 0x2D, 0xF0, 0x02, 0x15, 0xAE}};
+
+		// MSR 分区不含文件系统，直接归类为保留分区
+		if (IsEqualGUID(p.TypeGuid, MSR_GUID))
+		{
+			p.Content = PartitionContent::Reserved;
+			p.FsName = L"MSR";
+			return;
+		}
+
+		// ESP 分区内部是 FAT32，但先标记名称，后续 VBR 检测确认文件系统
+		if (IsEqualGUID(p.TypeGuid, ESP_GUID))
+		{
+			p.FsName = L"ESP";
+			// 继续走 VBR 检测（ESP 内部是 FAT32）
+		}
+	}
+
+	//
+	// 检测分区内容：读取 VBR（卷引导记录），匹配已知文件系统签名
+	//
+	// 文件系统签名位置：
+	//   NTFS:       扇区偏移 0x03  → "NTFS    "
+	//   ReFS:       扇区偏移 0x03  → "ReFS"
+	//   exFAT:      扇区偏移 0x03  → "EXFAT   "
+	//   FAT32:      扇区偏移 0x52  → "FAT32   "
+	//   FAT16:      扇区偏移 0x36  → "FAT16   "
+	//   BitLocker:  扇区偏移 0x03  → "-FVE-FS-"
+	//
+	void DiskParser::DetectPartitionContent(PartitionInfo& p, uint32_t sectorSize)
+	{
+		p.Content = PartitionContent::Unknown;
+		p.IsEncrypted = false;
+
+		// 读取分区第一个扇区（VBR）
+		BYTE sector[4096] = {};
+		if (!Read(p.Offset, sector, sectorSize))
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[DiskParser] Failed to read VBR at offset 0x%llx, marking as Raw", p.Offset);
+			LOG_WARNING(msg);
+			p.Content = PartitionContent::RawPartition;
+			p.FsName = L"Unreadable";
+			return;
+		}
+
+		// ---- 检查 BitLocker 加密标记（位于偏移 3，覆盖 NTFS OEM ID）----
+		if (memcmp(sector + 3, "-FVE-FS-", 8) == 0)
+		{
+			p.IsEncrypted = true;
+			p.Content = PartitionContent::FilesystemNTFS;
+			p.FsName = L"BitLocker-NTFS";
+			{
+				wchar_t msg[256];
+				swprintf_s(msg, L"[DiskParser] BitLocker encrypted partition at offset 0x%llx", p.Offset);
+				LOG_INFO(msg);
+			}
+			return;
+		}
+
+		// ---- 检查 NTFS 签名（OEM ID 字段，偏移 3）----
+		if (memcmp(sector + 3, "NTFS    ", 8) == 0)
+		{
+			p.Content = PartitionContent::FilesystemNTFS;
+			if (p.FsName.empty()) p.FsName = L"NTFS";
+			return;
+		}
+
+		// ---- 检查 ReFS 签名 ----
+		if (memcmp(sector + 3, "ReFS", 4) == 0)
+		{
+			p.Content = PartitionContent::FilesystemReFS;
+			if (p.FsName.empty()) p.FsName = L"ReFS";
+			return;
+		}
+
+		// ---- 检查 exFAT 签名 ----
+		if (memcmp(sector + 3, "EXFAT   ", 8) == 0)
+		{
+			p.Content = PartitionContent::FilesystemExFAT;
+			if (p.FsName.empty()) p.FsName = L"exFAT";
+			return;
+		}
+
+		// ---- 检查 FAT32 签名（位于偏移 0x52）----
+		if (memcmp(sector + 0x52, "FAT32   ", 8) == 0)
+		{
+			p.Content = PartitionContent::FilesystemFAT32;
+			if (p.FsName.empty()) p.FsName = L"FAT32";
+			return;
+		}
+
+		// ---- 检查 FAT16 签名（位于偏移 0x36）----
+		if (memcmp(sector + 0x36, "FAT16   ", 8) == 0)
+		{
+			p.Content = PartitionContent::FilesystemFAT32;  // 复用 FAT32 分类
+			if (p.FsName.empty()) p.FsName = L"FAT16";
+			return;
+		}
+
+		// ---- 无已知文件系统签名 → 裸分区 ----
+		p.Content = PartitionContent::RawPartition;
+		if (p.FsName.empty()) p.FsName = L"Raw";
+
+		{
+			wchar_t msg[512];
+			swprintf_s(msg, L"[DiskParser] Partition at 0x%llx: Content=%d, FsName=%ls",
+				p.Offset, (int)p.Content, p.FsName.c_str());
+			LOG_INFO(msg);
+		}
+	}
+
 	bool DiskParser::ParseMBR(DiskLayout& layout)
 {
 	uint32_t sectorSize = layout.Disk.SectorSize;
@@ -226,6 +350,8 @@ namespace Disk
 		p.MbrType = entries[i].Type;
 		p.Offset = (uint64_t)entries[i].StartLBA * sectorSize;
 		p.Size = (uint64_t)entries[i].SectorCount * sectorSize;
+		// 检测分区内容（读取 VBR，匹配文件系统签名）
+		DetectPartitionContent(p, sectorSize);
 		layout.Partitions.push_back(p);
 	}
 	return true;
@@ -291,6 +417,10 @@ namespace Disk
 		p.Attributes = e->Attributes;
 		p.Name = e->Name;
 
+		// GPT 分区类型预分类（MSR/ESP 等）
+		DetectPartitionContentGpt(p);
+		// 检测分区内容（读取 VBR，匹配文件系统签名）
+		DetectPartitionContent(p, sectorSize);
 		layout.Partitions.push_back(p);
 	}
 

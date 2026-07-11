@@ -14,6 +14,18 @@ namespace Disk
 		GPT
 	};
 
+	// 分区内容分类（备份系统的四分类基础）
+	enum class PartitionContent
+	{
+		Unknown = 0,        // 未检测
+		FilesystemNTFS,     // NTFS 文件系统 → VSS 快照备份
+		FilesystemFAT32,    // FAT32 文件系统 → VSS 快照备份
+		FilesystemExFAT,    // exFAT 文件系统 → VSS 快照备份
+		FilesystemReFS,     // ReFS 文件系统 → VSS 快照备份
+		RawPartition,       // 有分区但无已知文件系统 → 物理磁盘直接读取备份
+		Reserved,           // 系统保留分区（MSR 等）→ 归入磁盘元数据备份
+	};
+
 	// 磁盘范围结构体
 	struct DiskRange
 	{
@@ -47,6 +59,10 @@ namespace Disk
 		GUID PartitionGuid;  // GPT分区GUID
 		uint64_t Attributes;  // GPT属性
 		std::wstring Name;  // GPT名称
+
+		PartitionContent Content = PartitionContent::Unknown;  // 分区内容分类
+		bool IsEncrypted = false;                               // BitLocker 等加密标记
+		std::wstring FsName;                                    // 文件系统名称（"NTFS", "FAT32" 等）
 	};
 
 	//
@@ -166,6 +182,12 @@ namespace Disk
 
 		// 计算未分配空间
 		void CalculateFreeSpace(DiskLayout& layout);
+
+		// 检测分区内容：读取 VBR 扇区，匹配文件系统签名
+		void DetectPartitionContent(PartitionInfo& p, uint32_t sectorSize);
+
+		// GPT 分区类型预分类：MSR/ESP 等系统保留分区
+		void DetectPartitionContentGpt(PartitionInfo& p);
 	};
 
 
