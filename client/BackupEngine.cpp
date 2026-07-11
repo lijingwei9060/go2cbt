@@ -156,13 +156,29 @@ namespace BackupEngine
 		uint64_t totalSize = layout.Disk.Size;
 		uint64_t totalBlocks = (totalSize + BlockHash::BLOCK_SIZE - 1) / BlockHash::BLOCK_SIZE;
 
-		// 从 VSS 快照卷读取（如果有文件系统分区）
-		std::wstring dataSource = L"PhysicalDrive";
-		HANDLE hReadSource = CreateFileW(
-			L"\\\\.\\PhysicalDrive0", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-			nullptr, OPEN_EXISTING, 0, nullptr);
+		// 数据源：有文件系统分区时优先 VSS 快照，否则回退物理盘
+		std::wstring dataSource;
+		for (const auto& mp : mapper.GetMappedPartitions())
+		{
+			std::wstring snapPath;
+			if (vss.GetSnapshotDevicePath(mp.VolumeGuid, snapPath) && !snapPath.empty())
+			{
+				dataSource = snapPath;
+				LOG_INFO(L"[BackupEngine] Using VSS snapshot as data source");
+				break;
+			}
+		}
+		if (dataSource.empty())
+		{
+			wchar_t diskBuf[64];
+			swprintf_s(diskBuf, L"\\\\.\\PhysicalDrive%d", devNo);
+			dataSource = diskBuf;
+			LOG_INFO(L"[BackupEngine] Using physical disk as data source");
+		}
 
-		// 注意：实际应从快照卷读取，这里简化处理
+		HANDLE hReadSource = CreateFileW(dataSource.c_str(),
+			GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, OPEN_EXISTING, 0, nullptr);
 
 		// ---- 创建版本 + 初始化块状态 ----
 		BlockState::BlockStateManager state;
@@ -210,7 +226,7 @@ namespace BackupEngine
 		}
 
 		uint64_t sent = TransferBlocks(config, devNo, hasher, compressor, client, state,
-			(uint32_t)ver.VersionId, totalBlocks, L"PhysicalDrive", stats);
+			(uint32_t)ver.VersionId, totalBlocks, dataSource, stats);
 
 		stats.SentBlocks = sent;
 		CloseConnection(client, devNo);
@@ -299,8 +315,10 @@ namespace BackupEngine
 		hasher.Initialize();
 
 		// 从物理磁盘读取变化块计算哈希
+		wchar_t readPath[64];
+		swprintf_s(readPath, L"\\\\.\\PhysicalDrive%d", devNo);
 		HANDLE hRead = CreateFileW(
-			L"\\\\.\\PhysicalDrive0", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			readPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr, OPEN_EXISTING, 0, nullptr);
 
 		uint64_t totalBlocks = state.GetTotalBlocks();
@@ -339,6 +357,25 @@ namespace BackupEngine
 		stats.ChangedBlocks = cbtChanged.size();
 		stats.TotalBytes = totalSize;
 
+		// ---- 数据源确定 ----
+		std::wstring dataSource;
+		// 优先使用 VSS 快照路径
+		for (const auto& mp : mapper.GetMappedPartitions())
+		{
+			std::wstring snapPath;
+			if (vss.GetSnapshotDevicePath(mp.VolumeGuid, snapPath) && !snapPath.empty())
+			{
+				dataSource = snapPath;
+				break;
+			}
+		}
+		if (dataSource.empty())
+		{
+			wchar_t diskBuf[64];
+			swprintf_s(diskBuf, L"\\\\.\\PhysicalDrive%d", devNo);
+			dataSource = diskBuf;
+		}
+
 		// ---- 网络传输 ----
 		DataCompress::DataCompressor compressor;
 		compressor.Initialize();
@@ -352,7 +389,7 @@ namespace BackupEngine
 		}
 
 		uint64_t sent = TransferBlocks(config, devNo, hasher, compressor, client, state,
-			(uint32_t)ver.VersionId, totalBlocks, L"PhysicalDrive", stats);
+			(uint32_t)ver.VersionId, totalBlocks, dataSource, stats);
 
 		stats.SentBlocks = sent;
 		CloseConnection(client, devNo);
@@ -387,7 +424,7 @@ namespace BackupEngine
 		swprintf_s(path, L"\\\\.\\PhysicalDrive%d", devNo);
 
 		HANDLE hSource = CreateFileW(
-			path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			dataSourcePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr, OPEN_EXISTING, 0, nullptr);
 
 		// 遍历所有待处理块
