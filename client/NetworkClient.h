@@ -1,7 +1,11 @@
 ﻿#pragma once
-#include <windows.h>
+// 必须在 windows.h 之前包含 winsock2.h，否则 windows.h 会拉入旧版 winsock.h 产生冲突
+#ifndef _WINSOCKAPI_
+#define _WINSOCKAPI_
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <cstdint>
 #include <string>
 #include <vector>
