@@ -68,12 +68,24 @@ namespace VolumeMapping
 			devicePath.pop_back();
 		}
 
+		// 无盘符的卷（ESP、MSR、恢复分区等）不需要打开设备句柄
+		// 打开卷设备会触发文件系统过滤驱动（BitLocker fvevol、杀毒软件等）
+		// 的元数据操作，在加密卷上可能产生大量 System 进程 I/O
+		if (info.DriveLetter.empty())
+		{
+			wchar_t dbg[512];
+			swprintf_s(dbg, L"[VolumeMapper] Skipping %s (no drive letter, not a backup target)",
+				devicePath.c_str());
+			LOG_DEBUG(dbg);
+			return false;
+		}
+
 		// 打印进度：在打开卷之前输出，便于排查卡住位置
 		{
 			wchar_t dbg[512];
 			swprintf_s(dbg, L"[VolumeMapper] Opening %s (drive: %s)...",
 				devicePath.c_str(),
-				info.DriveLetter.empty() ? L"none" : info.DriveLetter.c_str());
+				info.DriveLetter.c_str());
 			LOG_INFO(dbg);
 		}
 
