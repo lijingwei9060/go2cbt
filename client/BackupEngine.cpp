@@ -145,6 +145,8 @@ namespace BackupEngine
 			stats.VssUsed = false;
 		}
 
+		LOG_DEBUG(L"[BackupEngine] ===== Phase 4/6: Build Hash Manifest =====");
+
 		// ---- 计算文件系统分区的哈希清单 ----
 		BlockHash::BlockHasher hasher;
 		hasher.Initialize();
@@ -176,6 +178,11 @@ namespace BackupEngine
 			LOG_INFO(L"[BackupEngine] Using physical disk as data source");
 		}
 
+		{
+			wchar_t dbg[256];
+			swprintf_s(dbg, L"[BackupEngine] Opening data source: %s", dataSource.c_str());
+			LOG_DEBUG(dbg);
+		}
 		HANDLE hReadSource = CreateFileW(dataSource.c_str(),
 			GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr, OPEN_EXISTING, 0, nullptr);

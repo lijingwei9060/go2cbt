@@ -87,6 +87,12 @@ namespace BlockState
 		FILETIME localFt;
 		GetSystemTimeAsFileTime(&localFt);
 		ver.CreateTimestamp = ((uint64_t)localFt.dwHighDateTime << 32) | localFt.dwLowDateTime;
+	{
+		wchar_t dbg_cv[256];
+		swprintf_s(dbg_cv, L"[BlockState] CreateVersion: id=%llu type=%s blocks=%llu size=%llu",
+			ver.VersionId, type.c_str(), totalBlocks, totalSize);
+		LOG_DEBUG(dbg_cv);
+	}
 
 		m_versions[ver.VersionId] = ver;
 		m_dirty = true;
