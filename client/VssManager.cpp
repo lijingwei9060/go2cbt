@@ -147,25 +147,13 @@ namespace VssSnapshot
 
 		{
 
-			pAsync->Wait();
-
-			HRESULT hrResult = 0;
-
-			pAsync->QueryStatus(&hrResult, nullptr);
-
-			pAsync->Release();
-
-
-
-			if (FAILED(hrResult))
+			if (!WaitForAsyncOperation(pAsync, L"GatherWriterMetadata", 300000))
 
 			{
 
-				wchar_t msg[256];
+				// 不致命，很多 Writer 可能不可用
 
-				swprintf_s(msg, L"[VssManager] GatherWriterMetadata failed: 0x%08X", hrResult);
-
-				LOG_WARNING(msg);
+				LOG_WARNING(L"[VssManager] GatherWriterMetadata failed or timed out");
 
 			}
 
@@ -735,27 +723,11 @@ namespace VssSnapshot
 
 			{
 
-				pCompleteAsync->Wait();
-
-
-
-				HRESULT hrResult = 0;
-
-				pCompleteAsync->QueryStatus(&hrResult, nullptr);
-
-				pCompleteAsync->Release();
-
-
-
-				if (FAILED(hrResult))
+				if (!WaitForAsyncOperation(pCompleteAsync, L"BackupComplete", 300000))
 
 				{
 
-					wchar_t msg[256];
-
-					swprintf_s(msg, L"[VssManager] BackupComplete failed: 0x%08X", hrResult);
-
-					LOG_WARNING(msg);
+					LOG_WARNING(L"[VssManager] BackupComplete failed or timed out");
 
 				}
 
@@ -869,7 +841,7 @@ namespace VssSnapshot
 
 	// ============================================================
 
-	bool VssManager::WaitForAsyncOperation(IVssAsync* pAsync, const wchar_t* operationName)
+	bool VssManager::WaitForAsyncOperation(IVssAsync* pAsync, const wchar_t* operationName, DWORD timeoutMs)
 
 	{
 
@@ -891,83 +863,185 @@ namespace VssSnapshot
 
 
 
-		// 等待异步操作完成
+		// 使用 QueryStatus 轮询代替 Wait() 无限阻塞
 
-		HRESULT hrWait = pAsync->Wait();
+		// 在 BitLocker 加密卷上 VSS Writer 协调可能极慢，无超时等待会导致进程卡死
 
-		if (FAILED(hrWait))
+		const DWORD pollInterval = 1000; // 每秒轮询一次
+
+		DWORD elapsed = 0;
+
+
+
+		while (elapsed < timeoutMs)
 
 		{
 
-			wchar_t msg[256];
+			HRESULT hrResult = 0;
 
-			swprintf_s(msg, L"[VssManager] %s: IVssAsync::Wait() failed: 0x%08X", operationName, hrWait);
+			HRESULT hrQuery = pAsync->QueryStatus(&hrResult, nullptr);
 
-			LOG_ERROR(msg);
 
-			m_lastError = msg;
 
-			pAsync->Release();
+			if (FAILED(hrQuery))
 
-			return false;
+			{
+
+				wchar_t msg[256];
+
+				swprintf_s(msg, L"[VssManager] %s: QueryStatus failed: 0x%08X", operationName, hrQuery);
+
+				LOG_ERROR(msg);
+
+				m_lastError = msg;
+
+				pAsync->Release();
+
+				return false;
+
+			}
+
+
+
+			if (hrQuery != VSS_S_ASYNC_PENDING)
+
+			{
+
+				// 操作已结束（成功/失败/取消）
+
+				if (hrQuery == VSS_S_ASYNC_FINISHED)
+
+				{
+
+					pAsync->Release();
+
+
+
+					if (FAILED(hrResult))
+
+					{
+
+						wchar_t msg[256];
+
+						swprintf_s(msg, L"[VssManager] %s completed with error: 0x%08X (elapsed %lu ms)",
+
+							operationName, hrResult, elapsed);
+
+						LOG_ERROR(msg);
+
+						m_lastError = msg;
+
+						return false;
+
+					}
+
+
+
+					wchar_t msg[256];
+
+					swprintf_s(msg, L"[VssManager] %s completed successfully (%lu ms)",
+
+						operationName, elapsed);
+
+					LOG_INFO(msg);
+
+					return true;
+
+				}
+
+				else if (hrQuery == VSS_S_ASYNC_CANCELLED)
+
+				{
+
+					wchar_t msg[256];
+
+					swprintf_s(msg, L"[VssManager] %s: cancelled (elapsed %lu ms)",
+
+						operationName, elapsed);
+
+					LOG_ERROR(msg);
+
+					m_lastError = msg;
+
+					pAsync->Release();
+
+					return false;
+
+				}
+
+				else
+
+				{
+
+					// 未知状态，当作完成继续检查 hrResult
+
+					pAsync->Release();
+
+
+
+					if (FAILED(hrResult))
+
+					{
+
+						wchar_t msg[256];
+
+						swprintf_s(msg, L"[VssManager] %s: unexpected async status 0x%08X, result 0x%08X",
+
+							operationName, hrQuery, hrResult);
+
+						LOG_ERROR(msg);
+
+						m_lastError = msg;
+
+						return false;
+
+					}
+
+
+
+					wchar_t msg[256];
+
+					swprintf_s(msg, L"[VssManager] %s completed (unexpected status 0x%08X, %lu ms)",
+
+						operationName, hrQuery, elapsed);
+
+					LOG_INFO(msg);
+
+					return true;
+
+				}
+
+			}
+
+
+
+			// 仍在等待中，sleep 后重试
+
+			Sleep(pollInterval);
+
+			elapsed += pollInterval;
 
 		}
 
 
 
-		// 查询操作结果
-
-		HRESULT hrResult = 0;
-
-		HRESULT hrQuery = pAsync->QueryStatus(&hrResult, nullptr);
-
-		pAsync->Release();
-
-
-
-		if (FAILED(hrQuery))
-
-		{
-
-			wchar_t msg[256];
-
-			swprintf_s(msg, L"[VssManager] %s: QueryStatus failed: 0x%08X", operationName, hrQuery);
-
-			LOG_ERROR(msg);
-
-			m_lastError = msg;
-
-			return false;
-
-		}
-
-
-
-		if (FAILED(hrResult))
-
-		{
-
-			wchar_t msg[256];
-
-			swprintf_s(msg, L"[VssManager] %s completed with error: 0x%08X", operationName, hrResult);
-
-			LOG_WARNING(msg);
-
-			m_lastError = msg;
-
-			return false;
-
-		}
-
-
+		// 超时：取消异步操作并释放资源
 
 		wchar_t msg[256];
 
-		swprintf_s(msg, L"[VssManager] %s completed successfully", operationName);
+		swprintf_s(msg, L"[VssManager] %s: timed out after %lu ms (limit %lu ms)",
 
-		LOG_INFO(msg);
+			operationName, elapsed, timeoutMs);
 
-		return true;
+		LOG_ERROR(msg);
+
+		m_lastError = msg;
+
+		pAsync->Cancel();
+
+		pAsync->Release();
+
+		return false;
 
 	}
 

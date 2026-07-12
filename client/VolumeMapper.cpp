@@ -104,7 +104,7 @@ namespace VolumeMapping
 
 	// 注意：打开卷设备时需要去掉末尾的反斜杠
 
-	//       \\?\Volume{GUID}\  →  \\?\Volume{GUID}
+	//       \\?\Volume{GUID}\  ->  \\?\Volume{GUID}
 
 	// ============================================================
 
@@ -316,7 +316,7 @@ namespace VolumeMapping
 
 		wchar_t msg[512];
 
-		swprintf_s(msg, L"[VolumeMapper] Volume %s → Disk%d Offset=0x%llx Size=%llu",
+		swprintf_s(msg, L"[VolumeMapper] Volume %s -> Disk%d Offset=0x%llx Size=%llu",
 
 			info.DriveLetter.empty() ? L"(no letter)" : info.DriveLetter.c_str(),
 
@@ -394,7 +394,7 @@ namespace VolumeMapping
 
 
 
-		// 去掉末尾反斜杠: "C:\" → "C:"
+		// 去掉末尾反斜杠: "C:\" -> "C:"
 
 		if (!firstPath.empty() && firstPath.back() == L'\\')
 
@@ -582,7 +582,7 @@ namespace VolumeMapping
 
 					wchar_t matchMsg[512];
 
-					swprintf_s(matchMsg, L"[VolumeMapper] Matched partition[%u] @0x%llx → %s %s",
+					swprintf_s(matchMsg, L"[VolumeMapper] Matched partition[%u] @0x%llx -> %s %s",
 
 						part.Index, part.Offset,
 
