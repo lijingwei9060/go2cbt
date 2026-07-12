@@ -68,10 +68,23 @@ namespace VolumeMapping
 			devicePath.pop_back();
 		}
 
-		// 打开卷设备（需要管理员权限）
+		// 打印进度：在打开卷之前输出，便于排查卡住位置
+		{
+			wchar_t dbg[512];
+			swprintf_s(dbg, L"[VolumeMapper] Opening %s (drive: %s)...",
+				devicePath.c_str(),
+				info.DriveLetter.empty() ? L"none" : info.DriveLetter.c_str());
+			LOG_INFO(dbg);
+		}
+
+		// 打开卷设备（仅查询属性，不需要读/写权限）
+		// 使用 0 访问权限而非 GENERIC_READ，避免 CreateFileW 被磁盘
+		// 上未完成的 I/O 串行化阻塞——在 IO 繁忙时可能无限期挂起。
+		// IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS 是纯查询操作，
+		// 不需要任何数据访问权限。
 		HANDLE hVolume = CreateFileW(
 			devicePath.c_str(),
-			GENERIC_READ,
+			0,                           // 0 = 仅查询，无需读/写权限
 			FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr,
 			OPEN_EXISTING,
