@@ -113,21 +113,53 @@ namespace BackupEngine
 		mapper.Map(layout);
 
 		// 添加文件系统卷到快照集
+		LOG_DEBUG(L"[BackupEngine] Adding filesystem volumes to VSS snapshot set...");
 		bool hasFilesystem = false;
+		int fsAdded = 0, fsSkipped = 0;
 		for (const auto& mp : mapper.GetMappedPartitions())
 		{
 			auto content = mp.Partition.Content;
-			if (content == Disk::PartitionContent::FilesystemNTFS ||
-				content == Disk::PartitionContent::FilesystemFAT32 ||
-				content == Disk::PartitionContent::FilesystemExFAT ||
-				content == Disk::PartitionContent::FilesystemReFS)
+			const wchar_t* fsLabel = L"?";
+			bool isFS = false;
+			if (content == Disk::PartitionContent::FilesystemNTFS)
+				{ fsLabel = L"NTFS"; isFS = true; }
+			else if (content == Disk::PartitionContent::FilesystemFAT32)
+				{ fsLabel = L"FAT32"; isFS = true; }
+			else if (content == Disk::PartitionContent::FilesystemExFAT)
+				{ fsLabel = L"exFAT"; isFS = true; }
+			else if (content == Disk::PartitionContent::FilesystemReFS)
+				{ fsLabel = L"ReFS"; isFS = true; }
+
+			if (isFS)
 			{
 				VSS_ID setId;
+				{
+					wchar_t dbg[512];
+					swprintf_s(dbg, L"[BackupEngine]   Adding to snapshot set: %s (drive=%s offset=0x%llx size=%llu)",
+						fsLabel,
+						mp.DriveLetter.empty() ? L"none" : mp.DriveLetter.c_str(),
+						mp.Partition.Offset, mp.Partition.Size);
+					LOG_DEBUG(dbg);
+				}
 				if (vss.AddVolumeToSnapshotSet(mp.VolumeGuid, setId))
 				{
 					hasFilesystem = true;
+					fsAdded++;
+				}
+				else
+				{
+					fsSkipped++;
+					wchar_t dbg[256];
+					swprintf_s(dbg, L"[BackupEngine]   FAILED to add %s to snapshot set", fsLabel);
+					LOG_WARNING(dbg);
 				}
 			}
+		}
+		{
+			wchar_t dbg[128];
+			swprintf_s(dbg, L"[BackupEngine] Snapshot set summary: %d added, %d failed (%d non-FS skipped)",
+				fsAdded, fsSkipped, (int)mapper.GetMappedPartitions().size() - fsAdded - fsSkipped);
+			LOG_DEBUG(dbg);
 		}
 
 		if (hasFilesystem)

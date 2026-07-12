@@ -202,7 +202,38 @@ namespace VolumeMapping
 		m_volumes.clear();
 		m_mapped.clear();
 
-		// Step 1: 枚举所有卷 GUID
+	// 打印传入的 layout 分区信息用于诊断
+	{
+		const wchar_t* styleStr = L"Unknown";
+		if (layout.Disk.Style == Disk::PartitionStyle::GPT) styleStr = L"GPT";
+		else if (layout.Disk.Style == Disk::PartitionStyle::MBR) styleStr = L"MBR";
+		double sizeGB = (double)layout.Disk.Size / (1024.0 * 1024.0 * 1024.0);
+		wchar_t dbg[512];
+		swprintf_s(dbg, L"[VolumeMapper] Map() input: Disk%d, %.2f GB, %s, %zu partitions, %zu free ranges",
+			layout.Disk.DeviceNumber, sizeGB, styleStr,
+			layout.Partitions.size(), layout.FreeRanges.size());
+		LOG_DEBUG(dbg);
+
+		for (size_t pi = 0; pi < layout.Partitions.size(); pi++)
+		{
+			const auto& p = layout.Partitions[pi];
+			const wchar_t* contentStr = L"?";
+			switch (p.Content) {
+			case Disk::PartitionContent::FilesystemNTFS: contentStr = L"NTFS"; break;
+			case Disk::PartitionContent::FilesystemFAT32: contentStr = L"FAT32"; break;
+			case Disk::PartitionContent::FilesystemExFAT: contentStr = L"exFAT"; break;
+			case Disk::PartitionContent::FilesystemReFS: contentStr = L"ReFS"; break;
+			case Disk::PartitionContent::RawPartition: contentStr = L"Raw"; break;
+			case Disk::PartitionContent::Reserved: contentStr = L"Reserved"; break;
+			}
+			swprintf_s(dbg, L"[VolumeMapper]   Partition[%u] @0x%010llx size=%llu %s%s%s",
+				p.Index, p.Offset, p.Size, contentStr,
+				p.IsEncrypted ? L" [BitLocker]" : L"",
+				p.FsName.empty() ? L"" : (std::wstring(L" fs=") + p.FsName).c_str());
+			LOG_DEBUG(dbg);
+		}
+	}
+// Step 1: 枚举所有卷 GUID
 		std::vector<std::wstring> volumeGuids = EnumerateVolumes();
 		if (volumeGuids.empty())
 		{
