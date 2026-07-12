@@ -20,6 +20,8 @@ public:
 	// 初始化压缩器
 	// 返回 true 表示成功创建 Compressor Handle
 	//
+	DataCompressor() : m_hCompressor(nullptr), m_initialized(false) {}
+
 	bool Initialize();
 
 	//
