@@ -168,14 +168,24 @@ namespace BlockHash
 
 			manifest.Entries.push_back(entry);
 
+			// 每个块的详细日志（DEBUG 级别）
+			{
+				wchar_t dbg[384];
+				std::wstring hashHex = BlockHasher::HashToHex(entry.Hash);
+				swprintf_s(dbg, L"[BlockHasher] Block %llu/%llu offset=0x%010llx size=%u hash=%s",
+					i, manifest.TotalBlocks, currentOffset, blockSize, hashHex.c_str());
+				LOG_DEBUG(dbg);
+			}
+
 			currentOffset += blockSize;
 			remaining -= blockSize;
 
-			// 每 1000 个块输出一次进度
-			if (i % 1000 == 0 && i > 0)
+			// 每 100 个块输出一次进度摘要
+			if (i % 100 == 0 && i > 0)
 			{
+				double pct = (double)i / (double)manifest.TotalBlocks * 100.0;
 				wchar_t msg[256];
-				swprintf_s(msg, L"[BlockHasher] Progress: %llu/%llu blocks hashed", i, manifest.TotalBlocks);
+				swprintf_s(msg, L"[BlockHasher] Progress: %llu/%llu blocks hashed (%.1f%%)", i, manifest.TotalBlocks, pct);
 				LOG_INFO(msg);
 			}
 		}
@@ -243,6 +253,14 @@ namespace BlockHash
 			}
 
 			hashes.push_back(newEntry);
+
+			{
+				wchar_t dbg[384];
+				std::wstring hashHex = BlockHasher::HashToHex(newEntry.Hash);
+				swprintf_s(dbg, L"[BlockHasher] Rehash block %llu offset=0x%010llx size=%u hash=%s",
+					idx, entry.Offset, blockSize, hashHex.c_str());
+				LOG_DEBUG(dbg);
+			}
 		}
 
 		return true;

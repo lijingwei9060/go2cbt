@@ -67,6 +67,16 @@ namespace BackupCommon
 		/*
 			关闭日志
 		*/
+		/*
+			设置最低日志级别（低于此级别的日志将被忽略）
+			默认 LogLevel::Debug，即输出所有级别
+		*/
+		void SetMinLevel(LogLevel level) { m_minLevel = level; }
+		LogLevel GetMinLevel() const { return m_minLevel; }
+
+		/*
+			关闭日志
+		*/
 		void Shutdown();
 
 
@@ -89,7 +99,8 @@ namespace BackupCommon
 
 		std::wofstream m_file;
 		bool m_console;
-		bool m_initialized;
+		LogLevel m_minLevel;         // 最低日志级别，默认 Debug
+	bool m_initialized;
 		std::mutex m_mutex;
 
 	};

@@ -161,6 +161,19 @@ namespace Network
 		if (!SendAll((uint8_t*)&blkHdr, sizeof(blkHdr))) return false;
 		if (!SendAll(compressedData, compressedSize)) return false;
 
+		// 发送日志（DEBUG 级别）
+		{
+			wchar_t hexStr[65];
+			for (int hi = 0; hi < 32; hi++)
+				swprintf_s(hexStr + hi * 2, 3, L"%02X", hash[hi]);
+			hexStr[64] = L'\0';
+
+			wchar_t dbg[384];
+			swprintf_s(dbg, L"[NetworkClient] SEND block=%llu dev=%u raw=%u compressed=%u hash=%s",
+				blockIndex, devNo, rawSize, compressedSize, hexStr);
+			LOG_DEBUG(dbg);
+		}
+
 		// 等待 ACK
 		return ReceiveAck(devNo, blockIndex);
 	}
@@ -290,6 +303,19 @@ namespace Network
 			LOG_ERROR(msg);
 			m_lastError = msg;
 			return false;
+		}
+
+		// ACK 成功日志（DEBUG 级别）
+		{
+			wchar_t hexStr[65];
+			for (int hi = 0; hi < 32; hi++)
+				swprintf_s(hexStr + hi * 2, 3, L"%02X", ack.Hash[hi]);
+			hexStr[64] = L'\0';
+
+			wchar_t dbg[256];
+			swprintf_s(dbg, L"[NetworkClient] RECV ACK block=%llu dev=%u status=OK hash=%s",
+				ack.BlockIndex, ack.DevNo, hexStr);
+			LOG_DEBUG(dbg);
 		}
 
 		// 校验 Hash 回传（服务端确认）

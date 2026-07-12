@@ -237,7 +237,7 @@ namespace VssSnapshot
 				m_volumeToSnapshotId.size());
 			LOG_INFO(msg);
 
-			if (!WaitForAsyncOperation(hr, L"PrepareForBackup"))
+			if (!WaitForAsyncOperation(pPrepareAsync, L"PrepareForBackup"))
 			{
 				wchar_t msg2[256];
 				swprintf_s(msg2, L"[VssManager] PrepareForBackup wait failed for %s", m_lastError.c_str());
@@ -267,7 +267,7 @@ namespace VssSnapshot
 
 		LOG_INFO(L"[VssManager] DoSnapshotSet started, waiting for completion...");
 
-		if (!WaitForAsyncOperation(hr, L"DoSnapshotSet"))
+		if (!WaitForAsyncOperation(pDoSnapshotAsync, L"DoSnapshotSet"))
 		{
 			wchar_t msg[256];
 			swprintf_s(msg, L"[VssManager] DoSnapshotSet wait failed: %s", m_lastError.c_str());
@@ -431,16 +431,55 @@ namespace VssSnapshot
 	// ============================================================
 	// 等待异步操作完成
 	// ============================================================
-	bool VssManager::WaitForAsyncOperation(HRESULT hrResult, const wchar_t* operationName)
+	bool VssManager::WaitForAsyncOperation(IVssAsync* pAsync, const wchar_t* operationName)
 	{
-		// IVssAsync::Wait() 可以等待任意时间
-		// 返回的 hrResult 来自 PrepareForBackup / DoSnapshotSet
+		if (!pAsync)
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[VssManager] %s: null async pointer", operationName);
+			LOG_WARNING(msg);
+			m_lastError = msg;
+			return false;
+		}
 
-		// 对于 DoSnapshotSet 返回的 IVssAsync
-		// 这里 hrResult 是操作启动的结果，实际完成状态由 Wait() 获得
+		// 等待异步操作完成
+		HRESULT hrWait = pAsync->Wait();
+		if (FAILED(hrWait))
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[VssManager] %s: IVssAsync::Wait() failed: 0x%08X", operationName, hrWait);
+			LOG_ERROR(msg);
+			m_lastError = msg;
+			pAsync->Release();
+			return false;
+		}
 
-		UNREFERENCED_PARAMETER(hrResult);
-		UNREFERENCED_PARAMETER(operationName);
+		// 查询操作结果
+		HRESULT hrResult = 0;
+		HRESULT hrQuery = pAsync->QueryStatus(&hrResult, nullptr);
+		pAsync->Release();
+
+		if (FAILED(hrQuery))
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[VssManager] %s: QueryStatus failed: 0x%08X", operationName, hrQuery);
+			LOG_ERROR(msg);
+			m_lastError = msg;
+			return false;
+		}
+
+		if (FAILED(hrResult))
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[VssManager] %s completed with error: 0x%08X", operationName, hrResult);
+			LOG_WARNING(msg);
+			m_lastError = msg;
+			return false;
+		}
+
+		wchar_t msg[256];
+		swprintf_s(msg, L"[VssManager] %s completed successfully", operationName);
+		LOG_INFO(msg);
 		return true;
 	}
 

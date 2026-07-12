@@ -429,9 +429,17 @@ namespace BackupEngine
 
 		// 遍历所有待处理块
 		auto pending = state.GetPendingBlocks();
+		uint64_t pendingCount = pending.size();
 
+		wchar_t startMsg[256];
+		swprintf_s(startMsg, L"[BackupEngine] Starting transfer: %llu blocks pending (%llu total)",
+			pendingCount, totalBlocks);
+		LOG_INFO(startMsg);
+
+		uint64_t blockIdx = 0;
 		for (const auto& block : pending)
 		{
+			blockIdx++;
 			uint32_t blockSize = BlockHash::BLOCK_SIZE;
 			if (block.BlockIndex == totalBlocks - 1)
 			{
@@ -462,6 +470,9 @@ namespace BackupEngine
 
 			if (!readOk && !config.DryRun)
 			{
+				wchar_t failMsg[256];
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu read failed, skipping", block.BlockIndex);
+				LOG_WARNING(failMsg);
 				// 仅 dryrun 模式容忍读取失败
 				continue;
 			}
@@ -470,6 +481,9 @@ namespace BackupEngine
 			std::vector<uint8_t> compressed;
 			if (!compressor.Compress(blockData.data(), blockSize, compressed))
 			{
+				wchar_t failMsg[256];
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu compress failed, skipping", block.BlockIndex);
+				LOG_WARNING(failMsg);
 				continue;
 			}
 
@@ -496,11 +510,31 @@ namespace BackupEngine
 					state.SetBlockAck(block.BlockIndex, BlockState::AckStatus::Acknowledged);
 					sentCount++;
 					stats.AckedBlocks++;
+
+					// 每个块的详细日志（DEBUG 级别）：hash、传输size、ACK 状态
+					{
+						wchar_t dbg[512];
+						std::wstring hashHex = BlockHash::BlockHasher::HashToHex(block.Hash);
+						swprintf_s(dbg, L"[BackupEngine] Block %llu/%llu idx=%llu offset=0x%010llx raw=%u compressed=%zu hash=%s ACK=OK",
+							blockIdx, pendingCount, block.BlockIndex, block.Offset,
+							blockSize, compressed.size(), hashHex.c_str());
+						LOG_DEBUG(dbg);
+					}
 					break;
 				}
 				else
 				{
 					state.SetBlockAck(block.BlockIndex, BlockState::AckStatus::Failed);
+
+					// 失败的详细日志（DEBUG 级别）
+					{
+						wchar_t dbg[512];
+						std::wstring hashHex = BlockHash::BlockHasher::HashToHex(block.Hash);
+						swprintf_s(dbg, L"[BackupEngine] Block %llu/%llu idx=%llu offset=0x%010llx raw=%u compressed=%zu hash=%s ACK=FAIL[%d]",
+							blockIdx, pendingCount, block.BlockIndex, block.Offset,
+							blockSize, compressed.size(), hashHex.c_str(), retry);
+						LOG_DEBUG(dbg);
+					}
 
 					if (retry < config.RetryCount)
 					{
@@ -512,9 +546,14 @@ namespace BackupEngine
 				}
 			}
 
-			// 每 100 块保存一次状态
+			// 每 100 块保存一次状态 + 进度日志
 			if (sentCount % 100 == 0 && sentCount > 0)
 			{
+				double pct = (double)sentCount / (double)pendingCount * 100.0;
+				wchar_t progressMsg[256];
+				swprintf_s(progressMsg, L"[BackupEngine] Transfer progress: %llu/%llu blocks (%.1f%%), %llu bytes compressed",
+					sentCount, pendingCount, pct, totalCompressed);
+				LOG_INFO(progressMsg);
 				state.Save();
 			}
 		}

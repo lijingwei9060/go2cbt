@@ -10,6 +10,7 @@ namespace BackupCommon
 
     Logger::Logger()
         :
+        m_minLevel(LogLevel::Debug),
         m_console(false),
         m_initialized(false)
     {
@@ -73,6 +74,12 @@ namespace BackupCommon
         const std::wstring& message
     )
     {
+
+        // 过滤低于最低级别的日志
+        if (level < m_minLevel)
+        {
+            return;
+        }
 
         std::lock_guard<std::mutex> lock(m_mutex);
 

@@ -142,7 +142,7 @@ private:
 	// 等待异步操作完成
 	// 在 PrepareForBackup 和 DoSnapshotSet 后调用
 	//
-	bool WaitForAsyncOperation(HRESULT hrResult, const wchar_t* operationName);
+	bool WaitForAsyncOperation(IVssAsync* pAsync, const wchar_t* operationName);
 
 	//
 	// 获取快照属性列表
