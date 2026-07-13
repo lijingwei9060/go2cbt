@@ -1047,6 +1047,10 @@ namespace BackupEngine
 			auto pending = state.GetPendingBlocks();
 
 			uint64_t pendingCount = pending.size();
+				if (pendingCount == 0)
+				{
+					LOG_WARNING(L"[BackupEngine] No pending blocks to transfer - check GetPendingBlocks/InitFullBlocks");
+				}
 
 
 

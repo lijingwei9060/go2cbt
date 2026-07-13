@@ -49,6 +49,8 @@ namespace Network
 		m_port = port;
 		m_timeoutSec = timeoutSec;
 
+		LOG_INFO(L"[NetworkClient] Connecting to server...");
+
 		m_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_socket == INVALID_SOCKET)
 		{
@@ -104,7 +106,13 @@ namespace Network
 		uint64_t totalBlocks, uint64_t totalSize,
 		const std::wstring& versionType)
 	{
-		if (!m_connected) return false;
+		if (!m_connected)
+		{
+			LOG_ERROR(L"[NetworkClient] SendHello called but not connected");
+			return false;
+		}
+
+		LOG_INFO(L"[NetworkClient] Sending HELLO...");
 
 		// ---- Header ----
 		MsgHeader hdr;
@@ -127,7 +135,19 @@ namespace Network
 		if (!SendAll((uint8_t*)&body, sizeof(body))) return false;
 
 		// 等待 ACK 确认
-		return ReceiveAck(devNo, 0);
+		bool ackOk = ReceiveAck(devNo, 0);
+		if (ackOk)
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[NetworkClient] HELLO ACK OK: dev=%u version=%u blocks=%llu size=%llu type=%s",
+				devNo, versionId, totalBlocks, totalSize, versionType.c_str());
+			LOG_INFO(msg);
+		}
+		else
+		{
+			LOG_ERROR(L"[NetworkClient] HELLO ACK FAILED - server rejected handshake");
+		}
+		return ackOk;
 	}
 
 	// ============================================================
@@ -185,6 +205,8 @@ namespace Network
 	{
 		if (!m_connected) return false;
 
+		LOG_INFO(L"[NetworkClient] Sending BYE...");
+
 		MsgHeader hdr;
 		memset(&hdr, 0, sizeof(hdr));
 		hdr.Magic = PROTOCOL_MAGIC;
@@ -194,7 +216,12 @@ namespace Network
 		if (!SendAll((uint8_t*)&hdr, sizeof(hdr))) return false;
 
 		// 等待最后的 ACK
-		return ReceiveAck(devNo, 0xFFFFFFFFFFFFFFFFULL);
+		bool ok = ReceiveAck(devNo, 0xFFFFFFFFFFFFFFFFULL);
+		if (ok)
+		{
+			LOG_INFO(L"[NetworkClient] BYE ACK OK");
+		}
+		return ok;
 	}
 
 	// ============================================================
@@ -257,6 +284,7 @@ namespace Network
 			{
 				// 连接关闭
 				m_lastError = L"Connection closed by server";
+				LOG_ERROR(m_lastError.c_str());
 				m_connected = false;
 				return false;
 			}
@@ -317,9 +345,6 @@ namespace Network
 				ack.BlockIndex, ack.DevNo, hexStr);
 			LOG_DEBUG(dbg);
 		}
-
-		// 校验 Hash 回传（服务端确认）
-		// Hash 验证由调用方处理
 
 		return true;
 	}
