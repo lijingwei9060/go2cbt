@@ -128,7 +128,10 @@ namespace BlockState
 			BlockState bs;
 			bs.BlockIndex = i;
 			bs.Offset = i * BLOCK_SIZE;
-			memcpy(bs.Hash, manifest.Entries[i].Hash, SHA256_SIZE);
+				if (i < manifest.Entries.size())
+					memcpy(bs.Hash, manifest.Entries[i].Hash, SHA256_SIZE);
+				else
+					memset(bs.Hash, 0, SHA256_SIZE);
 			bs.VersionId = versionId;
 			bs.Ack = AckStatus::Pending;
 			bs.Changed = true;

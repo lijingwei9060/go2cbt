@@ -11,6 +11,7 @@ namespace DataCompress
 //
 // DataCompressor: 使用 Windows Compression API (MSZIP) 进行 deflate 压缩
 // 输出自动转换为 zlib 格式（与服务端 uncompress2 兼容）
+// 转换失败时回退到 zlib stored block（不压缩，保证服务端可解压）
 //
 class DataCompressor
 {
@@ -66,6 +67,10 @@ private:
 
 	// 计算 Adler-32 校验和（zlib 格式尾部校验，RFC 1950）
 	static uint32_t ComputeAdler32(const uint8_t* data, size_t len);
+
+	// 构造 zlib stored block（不压缩的兜底方案，保证服务端可解压）
+	static bool CreateStoredZlib(const uint8_t* input, uint32_t inputSize,
+		std::vector<uint8_t>& output);
 };
 
 } // namespace DataCompress
