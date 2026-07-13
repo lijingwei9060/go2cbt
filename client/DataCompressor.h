@@ -9,7 +9,8 @@ namespace DataCompress
 {
 
 //
-// DataCompressor: 使用 Windows Compression API (deflate) 进行数据压缩
+// DataCompressor: 使用 Windows Compression API (MSZIP) 进行 deflate 压缩
+// 输出自动转换为 zlib 格式（与服务端 uncompress2 兼容）
 //
 class DataCompressor
 {
@@ -33,7 +34,7 @@ public:
 	// 压缩数据
 	// input: 原始数据
 	// inputSize: 原始大小 (<= BLOCK_SIZE)
-	// output: [输出] 压缩后数据
+	// output: [输出] 压缩后数据（zlib 格式，与服务端兼容）
 	// 返回 true 表示压缩成功
 	//
 	bool Compress(const uint8_t* input, uint32_t inputSize, std::vector<uint8_t>& output);
@@ -44,12 +45,13 @@ public:
 	static size_t GetMaxCompressedSize(size_t inputSize)
 	{
 		// deflate 极端情况: 比原始数据稍大
-		return inputSize + (inputSize / 1024) + 128;
+		// MSZIP → zlib 转换后比 MSZIP 多 4 字节（-2 CK头 +2 zlib头 +4 Adler32）
+		return inputSize + (inputSize / 1024) + 128 + 4;
 	}
 
 	//
 	// 解压数据（静态方法，不依赖实例）
-	// input: 压缩数据
+	// input: zlib 格式压缩数据
 	// inputSize: 压缩数据大小
 	// originalSize: 原始数据大小（压缩前已知）
 	// output: [输出] 解压后数据
@@ -61,6 +63,9 @@ private:
 
 	COMPRESSOR_HANDLE m_hCompressor;
 	bool m_initialized;
+
+	// 计算 Adler-32 校验和（zlib 格式尾部校验，RFC 1950）
+	static uint32_t ComputeAdler32(const uint8_t* data, size_t len);
 };
 
 } // namespace DataCompress

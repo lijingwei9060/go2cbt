@@ -552,7 +552,14 @@ namespace BackupEngine
 
 
 
-				client.SendHello((uint32_t)ver.VersionId, devNo, totalBlocks, totalSize, L"FULL");
+				if (!client.SendHello((uint32_t)ver.VersionId, devNo, totalBlocks, totalSize, L"FULL"))
+			{
+				LOG_ERROR(L"[BackupEngine] SendHello failed");
+				client.Disconnect();
+				vss.Cleanup();
+				state.Save();
+				return false;
+			}
 
 			}
 
@@ -934,9 +941,24 @@ namespace BackupEngine
 
 			{
 
-				client.Connect(config.ServerIp, config.Port, config.TimeoutSec);
+				if (!client.Connect(config.ServerIp, config.Port, config.TimeoutSec))
+			{
+				LOG_ERROR(L"[BackupEngine] Connect to server failed");
+				vss.Cleanup();
+				cbt.Disconnect();
+				state.Save();
+				return false;
+			}
 
-				client.SendHello((uint32_t)ver.VersionId, devNo, totalBlocks, totalSize, L"INCREMENTAL");
+			if (!client.SendHello((uint32_t)ver.VersionId, devNo, totalBlocks, totalSize, L"INCREMENTAL"))
+			{
+				LOG_ERROR(L"[BackupEngine] SendHello failed");
+				client.Disconnect();
+				vss.Cleanup();
+				cbt.Disconnect();
+				state.Save();
+				return false;
+			}
 
 			}
 
