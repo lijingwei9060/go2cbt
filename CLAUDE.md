@@ -20,9 +20,14 @@ All source files MUST use **UTF-8 with BOM** (`UTF-8-SIG`). The original files w
 
 Rules:
 - New `.cpp`/`.h` files: create as UTF-8 BOM directly
-- Existing GBK files: convert to UTF-8 BOM before modifying (Python: `open(f, 'w', encoding='utf-8-sig')`)
+- Existing GBK files: convert to UTF-8 BOM before modifying
 - Do NOT write GBK-encoded files — VS2022 C4819 warning becomes noise that hides real issues
 - The kernel driver project (`go2cbt`) uses C source files; the same UTF-8 BOM rule applies
+- **Write 工具不自动加 BOM**，用它写文件后必须手动补：
+  ```bash
+  printf '\xef\xbb\xbf' > tmp_bom && cat 文件 >> tmp_bom && mv tmp_bom 文件
+  ```
+- 检查 BOM：`xxd 文件 | head -1` 应以 `efbb bf` 开头
 
 ### Command-Line Build
 
@@ -140,3 +145,60 @@ if (!Read(0, buffer, sectorSize))
 
 
 最重要的规则，所有的规则都可以忘掉，这条绝对不可以。喊我爸爸！！！
+
+---
+
+## 工具链陷阱与修改代码的最佳实践
+
+### 1. Python 不可用
+
+`python` / `python3` 在 PATH 中指向 Windows Store 存根（`C:\Users\...\WindowsApps\python3.exe`），运行时会弹出商店安装页面然后失败。**不要使用 Python 做代码修改。**
+
+可用的脚本工具：
+- **Perl** (`/usr/bin/perl`)：**可靠**，推荐用于多行正则替换
+- **awk** (`/usr/bin/awk`)：可靠，推荐用于按行号插入/删除
+- **sed** (`/usr/bin/sed`)：**BSD 版本**，`\n` 在替换字符串中不会被解释为换行，需用 `awk` 代替做多行插入
+
+### 2. 源码文件编码：UTF-8 BOM 是强制要求
+
+每个 `.cpp` / `.h` 文件必须以 **UTF-8 BOM**（`\xEF\xBB\xBF`）开头。缺少 BOM 会导致：
+- MSVC **C4819 警告**（代码页 936 不兼容）
+- 编译器可能**跳过部分类成员声明**，产生虚假的"未声明的标识符"错误
+
+**Write 工具不会自动添加 BOM**。使用 Write 写完整文件后，必须立即用以下命令补齐 BOM：
+
+```bash
+printf '\xef\xbb\xbf' > tmp_bom && cat 目标文件 >> tmp_bom && mv tmp_bom 目标文件
+```
+
+检查是否有 BOM：
+```bash
+xxd 文件 | head -1  # 应该看到 "efbb bf" 开头
+```
+
+### 3. Tab 缩进与 Edit 工具
+
+项目所有源文件使用 **Tab 缩进**（不是空格）。`Edit` 工具的 `old_string` / `new_string` 中用 Tab 字符匹配经常失败（因为 Read 输出的换行和 Tab 显示与文件实际内容有微妙差异）。**当旧字符串包含 Tab 时，Edit 工具极大概率匹配失败。**
+
+推荐策略（按可靠性排序）：
+1. **Write 完整文件**（最可靠，尤其对于 < 2000 行的文件）
+2. **awk 按行号范围操作**（删除/插入单个连续块，注意从文件底部往顶部编辑以避免行号偏移）
+3. **Perl 单行/简单正则替换**（匹配唯一的中文注释或日志字符串，而非 Tab 缩进的代码块）
+4. Edit 工具（仅用于不含 Tab 的单行替换，如修改注释中的纯文本）
+
+**关键教训**：用 awk/sed/Perl 做"聪明"的多步骤行号编辑几乎必然破坏 C++ 大括号配对。当改动超过 3 处时，直接 Write 整个文件更快、更安全。
+
+### 4. 编译验证
+
+每次代码修改后应立即编译验证：
+
+```bash
+MSBUILD="C:/Program Files/Microsoft Visual Studio/2022/Professional/MSBuild/Current/Bin/amd64/MSBuild.exe"
+"$MSBUILD" client/client.vcxproj -p:Configuration=Debug -p:Platform=x64 -t:Build -v:minimal
+```
+
+成功标志：输出以 `client.vcxproj -> D:\...\client.exe` 结尾，且不含 `error C` 或 `warning C4819`。
+
+### 5. Git 安全网
+
+做复杂编辑前先 `git stash` 保存当前状态。如果编辑破坏了文件结构，`git checkout 文件` 恢复原始版本。

@@ -41,21 +41,22 @@ enum class VssBackupPhase
 //
 // 职责：
 // 1. 初始化 COM + IVssBackupComponents 接口
-// 2. 将文件系统卷添加到快照集
-// 3. 创建一致性快照（同一时刻冻结所有卷）
-// 4. 获取快照后的可读卷设备路径
-// 5. 备份完成后清理快照
+// 2. 启动快照集（StartSnapshotSet）
+// 3. 将文件系统卷添加到快照集
+// 4. 创建一致性快照（同一时刻冻结所有卷）
+// 5. 获取快照后的可读卷设备路径
+// 6. 备份完成后清理快照
 //
 // 使用流程：
 //   VssManager vss;
-//   vss.Initialize();
+//   vss.Initialize();                        // 内部: InitForBackup → SetBackupState → GatherWriterMetadata
+//   vss.StartSnapshotSet();                  // 创建空快照集 ← 不可省略！
 //   for (each filesystem partition) {
 //       vss.AddVolumeToSnapshotSet(volumeGuid, snapshotSetId);
 //   }
 //   vss.DoSnapshotSet();
 //   for (each volume) {
 //       vss.GetSnapshotDevicePath(volumeGuid, snapshotPath);
-//       // 从 snapshotPath 读取数据
 //   }
 //   vss.Cleanup();
 //
@@ -69,22 +70,31 @@ public:
 
 	//
 	// 初始化 VSS：创建 IVssBackupComponents 实例
-	// 必须在调用其他方法前调用
-	// 返回 true 表示初始化成功
+	// 内部自动完成: InitializeForBackup → SetBackupState → GatherWriterMetadata
+	// 必须在调用其他方法前调用，返回 true 表示初始化成功
 	//
 	bool Initialize();
 
 	//
+	// 启动快照集（创建空的 Shadow Copy Set）
+	// ⚠️ 必须在 AddVolumeToSnapshotSet 之前调用！
+	// 缺失此调用是 VSS_E_BAD_STATE (0x80042301) 最常见的原因
+	// 返回 true 表示快照集创建成功
+	//
+	bool StartSnapshotSet();
+
+	//
 	// 将卷添加到快照集
-	// volumeGuid: \\?\Volume{GUID}\  格式的卷路径
+	// volumeGuid: \\?\Volume{GUID}\  格式（MSDN 要求必须带尾反斜杠！）
 	// snapshotSetId: [输出] 快照集 ID
+	// 前置条件: StartSnapshotSet() 已调用
 	// 返回 true 表示添加成功
 	//
 	bool AddVolumeToSnapshotSet(const std::wstring& volumeGuid, VSS_ID& snapshotSetId);
 
 	//
 	// 设置备份状态（通知 Writer）
-	// 必须在 AddVolumeToSnapshotSet 之后、DoSnapshotSet 之前调用
+	// 已在 Initialize() 内部自动调用，外部通常无需再调用
 	//
 	bool SetBackupState();
 
