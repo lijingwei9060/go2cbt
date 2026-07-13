@@ -181,7 +181,13 @@ namespace VssSnapshot
 
 			IVssAsync* pAsync = nullptr;
 
+			LOG_DEBUG(L"[VssManager] Initialize: calling GatherWriterMetadata...");
 			hr = m_pVss->GatherWriterMetadata(&pAsync);
+			{
+				wchar_t dbg[128];
+				swprintf_s(dbg, L"[VssManager] Initialize: GatherWriterMetadata returned hr=0x%08X, pAsync=%p", hr, pAsync);
+				LOG_DEBUG(dbg);
+			}
 
 			if (SUCCEEDED(hr) && pAsync)
 
@@ -554,7 +560,13 @@ namespace VssSnapshot
 
 			IVssAsync* pPrepareAsync = nullptr;
 
+			LOG_DEBUG(L"[VssManager] DoSnapshotSet: calling PrepareForBackup...");
 			HRESULT hr = m_pVss->PrepareForBackup(&pPrepareAsync);
+			{
+				wchar_t dbg[128];
+				swprintf_s(dbg, L"[VssManager] DoSnapshotSet: PrepareForBackup returned hr=0x%08X, pAsync=%p", hr, pPrepareAsync);
+				LOG_DEBUG(dbg);
+			}
 
 			if (SUCCEEDED(hr) && pPrepareAsync)
 
@@ -604,7 +616,13 @@ namespace VssSnapshot
 
 			IVssAsync* pDoSnapshotAsync = nullptr;
 
+			LOG_DEBUG(L"[VssManager] DoSnapshotSet: calling DoSnapshotSet COM...");
 			hr = m_pVss->DoSnapshotSet(&pDoSnapshotAsync);
+			{
+				wchar_t dbg[128];
+				swprintf_s(dbg, L"[VssManager] DoSnapshotSet: COM returned hr=0x%08X, pAsync=%p", hr, pDoSnapshotAsync);
+				LOG_DEBUG(dbg);
+			}
 
 
 
@@ -974,12 +992,29 @@ namespace VssSnapshot
 			const DWORD pollInterval = 1000; // 每秒轮询一次
 
 			DWORD elapsed = 0;
+			DWORD nextProgressLog = 0; // 首次进入循环时打一次日志
+			{
+				wchar_t startMsg[256];
+				swprintf_s(startMsg, L"[VssManager] %s: entering poll loop (timeout=%lu ms)",
+					operationName, timeoutMs);
+				LOG_DEBUG(startMsg);
+			}
 
 
 
 			while (elapsed < timeoutMs)
 
 			{
+
+			// 打印进度（首次 + 之后每 10 秒一次，防止日志刷屏）
+			if (elapsed >= nextProgressLog)
+			{
+				wchar_t progress[256];
+				swprintf_s(progress, L"[VssManager] %s: still waiting... (%lu s elapsed, limit %lu s)",
+					operationName, elapsed / 1000, timeoutMs / 1000);
+				LOG_DEBUG(progress);
+				nextProgressLog = (nextProgressLog == 0) ? 10000 : elapsed + 10000;
+			}
 
 				HRESULT hrResult = 0;
 
@@ -1007,11 +1042,19 @@ namespace VssSnapshot
 
 
 
-				// 仅 VSS_S_ASYNC_FINISHED 和 VSS_S_ASYNC_CANCELLED 是终态
+				// VSS_S_ASYNC_FINISHED / VSS_S_ASYNC_CANCELLED 是终态
 
-				// S_OK / VSS_S_ASYNC_PENDING / 其他返回值均视为仍在进行中
+				// MSDN 规定这些值在 QueryStatus 返回值中，但某些 Provider 实现
 
-				if (hrQuery == VSS_S_ASYNC_FINISHED)
+				// 将状态写入 hrResult 而返回值恒为 S_OK，故同时检查两者
+
+				bool finished  = (hrQuery == VSS_S_ASYNC_FINISHED)  || (hrResult == VSS_S_ASYNC_FINISHED);
+
+				bool cancelled = (hrQuery == VSS_S_ASYNC_CANCELLED) || (hrResult == VSS_S_ASYNC_CANCELLED);
+
+
+
+				if (finished)
 
 				{
 
@@ -1051,7 +1094,7 @@ namespace VssSnapshot
 
 				}
 
-				else if (hrQuery == VSS_S_ASYNC_CANCELLED)
+				else if (cancelled)
 
 				{
 
