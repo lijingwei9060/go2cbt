@@ -127,6 +127,12 @@ public:
 	void Cleanup();
 
 	//
+	// 清洁所有孤立的残留快照（进程异常退出未 Cleanup 时遗留）
+	// 返回已删除快照数，-1 表示出错
+	//
+	static int DeleteOrphanedSnapshots();
+
+	//
 	// 查询是否已成功初始化
 	//
 	bool IsInitialized() const { return m_initialized; }

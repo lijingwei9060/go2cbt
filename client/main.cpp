@@ -7,6 +7,7 @@
 #include "DiskParser.h"
 #include "VolumeMapper.h"
 #include "BackupEngine.h"
+#include "VssManager.h"
 
 using namespace BackupCommon;
 using namespace BackupSecurity;
@@ -306,6 +307,7 @@ void PrintHelp()
 	wprintf(L"  client.exe query_disks              Enumerate all physical disks (fast scan)\n");
 	wprintf(L"  client.exe query_disk  <devno>      Detailed disk layout + volume mapping\n");
 	wprintf(L"  client.exe backup <all|devno>       Backup disk(s) to server\n");
+	wprintf(L"  client.exe cleanup-shadows          Delete orphaned VSS snapshots (admin)\n");
 	wprintf(L"         --cbt        Use CBT incremental tracking\n");
 	wprintf(L"         --serverip   Server IP address\n");
 	wprintf(L"         --port       Server port\n");
@@ -503,6 +505,36 @@ int wmain(int argc, wchar_t* argv[])
 		}
 		else
 			wprintf(L"\n  BACKUP FAILED\n");
+		wprintf(L"\n");
+
+		Logger::Instance().Shutdown();
+		return 0;
+	}
+
+	// ============================================================
+	// cleanup-shadows: 清理残留的 VSS 快照
+	// 用于进程异常退出后，vssadmin 无法删除 Backup 类型快照的场景
+	// ============================================================
+	if (wcscmp(argv[1], L"cleanup-shadows") == 0)
+	{
+		wprintf(L"\nCleaning up orphaned VSS snapshots...\n");
+
+		int deleted = VssSnapshot::VssManager::DeleteOrphanedSnapshots();
+
+		if (deleted >= 0)
+		{
+			wprintf(L"  Deleted: %d snapshot set(s)\n\n", deleted);
+		}
+		else
+		{
+			wprintf(L"  Cleanup failed (check backup.log for details)\n\n");
+			Logger::Instance().Shutdown();
+			return -1;
+		}
+
+		// 验证是否清理干净
+		wprintf(L"Verifying with vssadmin...\n");
+		system("vssadmin list shadows");
 		wprintf(L"\n");
 
 		Logger::Instance().Shutdown();

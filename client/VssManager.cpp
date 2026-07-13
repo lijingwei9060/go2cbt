@@ -1324,6 +1324,111 @@ namespace VssSnapshot
 
 		}
 
+	// ============================================================
+	// 清洁所有孤立的残留快照（静态方法，独立于实例）
+	// 用于进程异常退出（Ctrl+C / 崩溃）后清理 Backupp 类型快照
+	// vssadmin 无法删除此类快照，必须通过 VSS API
+	// ============================================================
+	int VssManager::DeleteOrphanedSnapshots()
+	{
+		int deletedCount = 0;
+		IVssBackupComponents* pVss = nullptr;
+
+		LOG_INFO(L"[VssManager] Orphaned snapshot cleanup starting...");
+
+		// Step 1: 初始化 COM
+		HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+		if (FAILED(hr) && hr != RPC_E_CHANGED_MODE)
+		{
+			LOG_WARNING(L"[VssManager] CoInitializeEx failed for cleanup");
+		}
+
+		// Step 2: 创建 VSS Backup Components
+		hr = CreateVssBackupComponents(&pVss);
+		if (FAILED(hr) || !pVss)
+		{
+			LOG_ERROR(L"[VssManager] CreateVssBackupComponents failed for cleanup");
+			CoUninitialize();
+			return -1;
+		}
+
+		// Step 3: 初始化备份组件（查询/删除快照的前提）
+		hr = pVss->InitializeForBackup();
+		if (FAILED(hr))
+		{
+			wchar_t msg[256];
+			swprintf_s(msg, L"[VssManager] InitializeForBackup failed for cleanup: 0x%08X", hr);
+			LOG_ERROR(msg);
+			pVss->Release();
+			CoUninitialize();
+			return -1;
+		}
+
+		// Step 4: 查询所有现有快照
+		IVssEnumObject* pEnum = nullptr;
+		hr = pVss->Query(GUID_NULL, VSS_OBJECT_NONE, VSS_OBJECT_SNAPSHOT, &pEnum);
+		if (FAILED(hr) || !pEnum)
+		{
+			LOG_INFO(L"[VssManager] No orphaned snapshots found");
+			pVss->Release();
+			CoUninitialize();
+			return 0;
+		}
+
+		// Step 5: 遍历并删除每个快照
+		ULONG fetched = 0;
+		VSS_OBJECT_PROP prop;
+
+		while (SUCCEEDED(pEnum->Next(1, &prop, &fetched)) && fetched == 1)
+		{
+			if (prop.Type == VSS_OBJECT_SNAPSHOT)
+			{
+				VSS_ID snapshotSetId = prop.Obj.Snap.m_SnapshotSetId;
+				BSTR originalVolume = prop.Obj.Snap.m_pwszOriginalVolumeName;
+				LONG deleted = 0;
+				VSS_ID nonDeletedId;
+
+				hr = pVss->DeleteSnapshots(
+					snapshotSetId,
+					VSS_OBJECT_SNAPSHOT_SET,
+					true,              // bForceDelete
+					&deleted,
+					&nonDeletedId
+				);
+
+				if (SUCCEEDED(hr) && deleted > 0)
+				{
+					wchar_t msg[512];
+					swprintf_s(msg, L"[VssManager] Deleted snapshot set (ID=%08X...) on %s",
+						snapshotSetId.Data1,
+						originalVolume ? originalVolume : L"<unknown>");
+					LOG_INFO(msg);
+					deletedCount += deleted;
+				}
+				else
+				{
+					wchar_t msg[256];
+					swprintf_s(msg, L"[VssManager] Skipping snapshot (hr=0x%08X, may already be gone)", hr);
+					LOG_WARNING(msg);
+				}
+			}
+			VssFreeSnapshotProperties(&prop.Obj.Snap);
+		}
+
+		pEnum->Release();
+
+		// Step 6: 清理 COM
+		pVss->Release();
+		CoUninitialize();
+
+		wchar_t summary[256];
+		swprintf_s(summary, L"[VssManager] Orphaned cleanup done: %d snapshot(s) deleted", deletedCount);
+		LOG_INFO(summary);
+
+		return deletedCount;
+	}
+
+
 
 
 } // namespace VssSnapshot
