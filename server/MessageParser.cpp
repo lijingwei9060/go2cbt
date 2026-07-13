@@ -4,20 +4,26 @@
 
 using namespace Protocol;
 
-ParseResult MessageParser::TryParse(const RingBuffer& buf, ParsedMessage& parsed)
+ParseResult MessageParser::TryParse(const RingBuffer& buf,
+                                    ParsedMessage& parsed,
+                                    ParseDiag& diag)
 {
+    diag = ParseDiag{};
+
     size_t readable = buf.ReadableBytes();
     if (readable < HEADER_SIZE)
         return ParseResult::kNeedMore;
 
     const uint8_t* p = buf.ReadPtr();
 
-    // 拷贝头部出来（可能未对齐）
     MsgHeader hdr;
     std::memcpy(&hdr, p, sizeof(hdr));
 
     if (hdr.Magic != PROTOCOL_MAGIC)
+    {
+        diag.gotMagic = hdr.Magic;
         return ParseResult::kBadMagic;
+    }
 
     uint32_t bodyLen = 0;
     switch (static_cast<MessageType>(hdr.Type))
@@ -33,8 +39,10 @@ ParseResult MessageParser::TryParse(const RingBuffer& buf, ParsedMessage& parsed
             std::memcpy(&bh, p + HEADER_SIZE, sizeof(bh));
             if (bh.CompressedSize > BLOCK_SIZE * 2)
             {
-                // 异常大的压缩长度，按 BadMagic 处理以触发丢弃同步
-                return ParseResult::kBadMagic;
+                diag.gotType       = hdr.Type;
+                diag.claimedCompSz = bh.CompressedSize;
+                diag.claimedBlkIdx = bh.BlockIndex;
+                return ParseResult::kOversizeBlock;
             }
             bodyLen = BLOCK_HEADER_SIZE + bh.CompressedSize;
             break;
@@ -49,7 +57,8 @@ ParseResult MessageParser::TryParse(const RingBuffer& buf, ParsedMessage& parsed
             bodyLen = 0;
             break;
         default:
-            return ParseResult::kBadMagic;
+            diag.gotType = hdr.Type;
+            return ParseResult::kInvalidType;
     }
 
     if (readable < HEADER_SIZE + bodyLen)

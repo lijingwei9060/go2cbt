@@ -58,8 +58,12 @@ private:
     void HandleConnWritable(Conn& c);
     void HandleConnError(Conn& c);
 
-    void CloseConn(int fd);
+    // reason 用于日志区分关闭原因（如 "peer closed" / "recv error" / "bye"）
+    void CloseConn(int fd, const char* reason);
     void ProcessMessages(Conn& c);
+
+    // 消息类型名（用于日志可读性）
+    static const char* MsgTypeName(uint32_t type);
 
     void HandleHello(Conn& c, const Protocol::MsgHeader& hdr, const std::vector<uint8_t>& body);
     void HandleDataBlock(Conn& c, const Protocol::MsgHeader& hdr, const std::vector<uint8_t>& body);
