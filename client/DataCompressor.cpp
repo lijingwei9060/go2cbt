@@ -115,7 +115,45 @@ namespace DataCompress
 	}
 
 	// ============================================================
-	// 压缩：MSZIP → zlib 格式转换，失败回退 stored block
+	// 将 raw deflate 数据包装为 zlib 格式
+	// zlib 格式: [0x78, 0x9C] + raw_deflate_data + adler32(4B big-endian)
+	// ============================================================
+	static bool WrapDeflateAsZlib(const uint8_t* deflateData, size_t deflateSize,
+		const uint8_t* originalData, uint32_t originalSize,
+		std::vector<uint8_t>& output)
+	{
+		uint32_t adler = DataCompressor::ComputeAdler32(originalData, originalSize);
+
+		// zlib 输出: header(2) + deflate_data + adler32(4)
+		output.resize(2 + deflateSize + 4);
+
+		// zlib 头: CMF=0x78, FLG=0x9C (default compression)
+		output[0] = 0x78;
+		output[1] = 0x9C;
+
+		// 复制 deflate 数据
+		memcpy(output.data() + 2, deflateData, deflateSize);
+
+		// Adler-32 校验和（大端序）
+		output[2 + deflateSize]     = static_cast<uint8_t>(adler >> 24);
+		output[2 + deflateSize + 1] = static_cast<uint8_t>(adler >> 16);
+		output[2 + deflateSize + 2] = static_cast<uint8_t>(adler >> 8);
+		output[2 + deflateSize + 3] = static_cast<uint8_t>(adler);
+
+		return true;
+	}
+
+	// ============================================================
+	// 压缩：MSZIP → zlib 格式转换，支持多种 Windows 版本
+	//
+	// Windows Compress API 行为差异：
+	//   旧版 (Win7/8) : 输出 "CK" + raw_deflate（.cab MSZIP 格式）
+	//   新版 (Win10+) : 输出 raw_deflate（无 "CK" 前缀）
+	//
+	// 处理策略：
+	//   1. 有 "CK" 前缀 → 跳过 2 字节，raw_deflate 包装为 zlib
+	//   2. 无 "CK" 前缀 → 整个输出视为 raw_deflate，包装为 zlib
+	//   3. 上述失败 → 回退 stored block（不压缩）
 	// ============================================================
 	bool DataCompressor::Compress(const uint8_t* input, uint32_t inputSize, std::vector<uint8_t>& output)
 	{
@@ -165,50 +203,39 @@ namespace DataCompress
 			}
 		}
 
-		// ---- Step 2: 尝试将 MSZIP 格式转换为 zlib 格式 ----
-		// MSZIP 格式: [0x43, 0x4B "CK"签名] + raw_deflate_data
-		// zlib  格式: [0x78, 0x9C CMF+FLG头] + raw_deflate_data + adler32(4B big-endian)
-
-		if (compressedSize >= 2 && mszipBuf[0] == 0x43 && mszipBuf[1] == 0x4B)
+		if (compressedSize < 2)
 		{
-			// MSZIP "CK" 签名验证通过，执行标准转换
+			// 输出太短，不可能包含有效 deflate 数据，回退 stored block
+			LOG_WARNING(L"[DataCompressor] Compress output too short, falling back to stored block");
+			return CreateStoredZlib(input, inputSize, output);
+		}
+
+		// ---- Step 2: 转换为 zlib 格式 ----
+		// 根据输出前两字节判断格式
+
+		if (mszipBuf[0] == 0x43 && mszipBuf[1] == 0x4B)
+		{
+			// 情况 A：MSZIP "CK" 签名（旧版 Windows）
+			// 跳过 2 字节 "CK" 前缀，剩余为 raw deflate
 			size_t deflateSize = compressedSize - 2;
-			uint32_t adler = ComputeAdler32(input, inputSize);
-
-			// zlib 输出: header(2) + deflate_data + adler32(4)
-			output.resize(2 + deflateSize + 4);
-
-			// zlib 头: CMF=0x78, FLG=0x9C (default compression)
-			output[0] = 0x78;
-			output[1] = 0x9C;
-
-			// 复制 deflate 数据（跳过 MSZIP 的 "CK" 签名）
-			memcpy(output.data() + 2, mszipBuf.data() + 2, deflateSize);
-
-			// Adler-32 校验和（大端序）
-			output[2 + deflateSize]     = static_cast<uint8_t>(adler >> 24);
-			output[2 + deflateSize + 1] = static_cast<uint8_t>(adler >> 16);
-			output[2 + deflateSize + 2] = static_cast<uint8_t>(adler >> 8);
-			output[2 + deflateSize + 3] = static_cast<uint8_t>(adler);
+			WrapDeflateAsZlib(mszipBuf.data() + 2, deflateSize, input, inputSize, output);
 
 			wchar_t dbgCvt[256];
-			swprintf_s(dbgCvt, L"[DataCompressor] MSZIP->zlib conversion: raw=%u compressed=%u",
+			swprintf_s(dbgCvt, L"[DataCompressor] MSZIP(CK)->zlib: raw=%u compressed=%u",
 				inputSize, (uint32_t)output.size());
 			LOG_DEBUG(dbgCvt);
 			return true;
 		}
 
-		// ---- Step 3: MSZIP 签名不匹配，回退到 zlib stored block ----
-		// stored block 不压缩数据，但保证服务端 uncompress2 一定可解压
-		{
-			wchar_t msg[256];
-			swprintf_s(msg, L"[DataCompressor] MSZIP signature mismatch (got 0x%02X 0x%02X), falling back to stored block",
-				compressedSize >= 1 ? mszipBuf[0] : 0,
-				compressedSize >= 2 ? mszipBuf[1] : 0);
-			LOG_WARNING(msg);
-		}
+		// 情况 B：无 "CK" 前缀（新版 Windows 直接输出 raw deflate）
+		// 整个输出视为 raw deflate 数据
+		WrapDeflateAsZlib(mszipBuf.data(), compressedSize, input, inputSize, output);
 
-		return CreateStoredZlib(input, inputSize, output);
+		wchar_t dbgCvt[256];
+		swprintf_s(dbgCvt, L"[DataCompressor] raw_deflate->zlib: raw=%u compressed=%u",
+			inputSize, (uint32_t)output.size());
+		LOG_DEBUG(dbgCvt);
+		return true;
 	}
 
 	// ============================================================

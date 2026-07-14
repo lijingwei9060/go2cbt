@@ -168,7 +168,7 @@ private:
 	//
 	// 释放指定块的槽位（ACK 回调中调用）
 	//
-	void ReleaseSlot(uint64_t blockIndex);
+	bool ReleaseSlot(uint64_t blockIndex);
 
 	//
 	// 等待所有在途块的 ACK（窗口清空）

@@ -145,8 +145,7 @@ namespace BackupEngine
 
 			LOG_ERROR(L"[BackupEngine] Failed to open disk");
 
-			return false;
-
+		return false;
 		}
 
 
@@ -161,8 +160,7 @@ namespace BackupEngine
 
 			LOG_ERROR(L"[BackupEngine] Failed to parse disk layout");
 
-			return false;
-
+		return false;
 		}
 
 		parser.Close();
@@ -224,8 +222,7 @@ namespace BackupEngine
 
 			LOG_ERROR(L"[BackupEngine] VSS initialization failed");
 
-			return false;
-
+		return false;
 		}
 
 		// 启动 VSS 快照集（必须在 AddVolumeToSnapshotSet 之前调用）
@@ -238,8 +235,7 @@ namespace BackupEngine
 
 			vss.Cleanup();
 
-			return false;
-
+		return false;
 		}
 
 
@@ -352,8 +348,7 @@ namespace BackupEngine
 
 			vss.Cleanup();
 
-			return false;
-
+		return false;
 		}
 
 
@@ -370,8 +365,7 @@ namespace BackupEngine
 
 				vss.Cleanup();
 
-				return false;
-
+		return false;
 			}
 
 			LOG_DEBUG(L"[BackupEngine] DoSnapshotSet completed successfully");
@@ -484,8 +478,7 @@ namespace BackupEngine
 
 				vss.Cleanup();
 
-				return false;
-
+		return false;
 			}
 
 
@@ -502,8 +495,7 @@ namespace BackupEngine
 
 				state.Save();
 
-				return false;
-
+		return false;
 			}
 
 			LOG_INFO(L"[BackupEngine] Server connection established, starting pipeline transfer...");
@@ -579,8 +571,7 @@ namespace BackupEngine
 
 			LOG_ERROR(L"[BackupEngine] CBT driver connection failed");
 
-			return false;
-
+		return false;
 		}
 
 
@@ -595,8 +586,7 @@ namespace BackupEngine
 
 			LOG_ERROR(L"[BackupEngine] CBT query failed");
 
-			return false;
-
+		return false;
 		}
 
 
@@ -631,8 +621,7 @@ namespace BackupEngine
 
 			cbt.Disconnect();
 
-			return false;
-
+		return false;
 		}
 
 		// 启动 VSS 快照集（必须在 AddVolumeToSnapshotSet 之前调用）
@@ -647,8 +636,7 @@ namespace BackupEngine
 
 			cbt.Disconnect();
 
-			return false;
-
+		return false;
 		}
 
 
@@ -712,8 +700,7 @@ namespace BackupEngine
 
 			cbt.Disconnect();
 
-			return false;
-
+		return false;
 		}
 
 
@@ -732,8 +719,7 @@ namespace BackupEngine
 
 				cbt.Disconnect();
 
-				return false;
-
+		return false;
 			}
 
 		}
@@ -822,8 +808,7 @@ namespace BackupEngine
 
 				state.Save();
 
-				return false;
-
+		return false;
 			}
 
 
@@ -842,8 +827,7 @@ namespace BackupEngine
 
 				state.Save();
 
-				return false;
-
+		return false;
 			}
 
 			LOG_INFO(L"[BackupEngine] Server connection established, starting hash computation...");
@@ -1107,9 +1091,8 @@ namespace BackupEngine
 
 			// 释放窗口槽位
 
-			ReleaseSlot(blockIndex);
-
-			m_inFlightCount--;
+			if (ReleaseSlot(blockIndex))
+				m_inFlightCount--;
 
 			m_windowCv.notify_all();
 
@@ -1247,6 +1230,7 @@ namespace BackupEngine
 
 				state.SetBlockHash(i, hash);
 
+				m_ackedCount++;
 				state.SetBlockAck(i, BlockState::AckStatus::Acknowledged);
 
 				sentCount++;
@@ -1951,8 +1935,7 @@ namespace BackupEngine
 
 					if (!m_window[i].InUse) return true;
 
-				return false;
-
+		return false;
 			});
 
 
@@ -1989,7 +1972,7 @@ namespace BackupEngine
 
 
 
-	void BackupEngine::ReleaseSlot(uint64_t blockIndex)
+	bool BackupEngine::ReleaseSlot(uint64_t blockIndex)
 
 	{
 
@@ -2015,13 +1998,12 @@ namespace BackupEngine
 
 				m_window[i].Compressed.shrink_to_fit();
 
-				break;
-
+				return true;
 			}
 
 		}
 
-		// 不在这里 notify，由调用者负责
+		return false;		// 不在这里 notify，由调用者负责
 
 	}
 
