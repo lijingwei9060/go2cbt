@@ -60,6 +60,9 @@ namespace Network
 		}
 
 		// 设置超时
+			// 启用 TCP Keep-Alive，防止长时间空闲（如 hash 计算）导致连接被防火墙/NAT 断开
+			SetTcpKeepAlive(m_socket);
+		SetSocketTimeout(m_socket, m_timeoutSec);
 		SetSocketTimeout(m_socket, m_timeoutSec);
 
 		sockaddr_in addr;
@@ -365,5 +368,27 @@ namespace Network
 		}
 		return true;
 	}
+
+		// ============================================================
+		// 设置 TCP Keep-Alive，防止空闲连接被断开
+		// ============================================================
+		bool NetworkClient::SetTcpKeepAlive(SOCKET sock)
+		{
+			// 启用 keepalive
+			BOOL keepalive = TRUE;
+			if (setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, (const char*)&keepalive, sizeof(keepalive)) == SOCKET_ERROR)
+				return false;
+
+			// 空闲 30 秒后开始发送 keepalive 探测
+			struct tcp_keepalive ka;
+			ka.onoff = 1;
+			ka.keepalivetime = 30 * 1000;  // 30 秒空闲后启动
+			ka.keepaliveinterval = 5 * 1000; // 每 5 秒重试一次
+			if (WSAIoctl(sock, SIO_KEEPALIVE_VALS, &ka, sizeof(ka), nullptr, 0, nullptr, nullptr, nullptr) == SOCKET_ERROR)
+				return false;
+
+			LOG_DEBUG(L"[NetworkClient] TCP Keep-Alive enabled: idle=30s interval=5s");
+			return true;
+		}
 
 } // namespace Network

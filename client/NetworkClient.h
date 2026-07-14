@@ -5,6 +5,7 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #include <windows.h>
 #include <cstdint>
 #include <string>
@@ -176,6 +177,11 @@ private:
 	// 设置 socket 超时
 	//
 	bool SetSocketTimeout(SOCKET sock, int timeoutSec);
+
+		//
+		// 设置 TCP Keep-Alive（防止空闲连接被防火墙断开）
+		//
+		bool SetTcpKeepAlive(SOCKET sock);
 
 	//
 	// 接收并解析 ACK
