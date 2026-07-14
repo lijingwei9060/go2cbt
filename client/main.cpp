@@ -314,6 +314,7 @@ void PrintHelp()
 	wprintf(L"         --dryrun     Simulated mode (no server)\n");
 	wprintf(L"         --retry N    Retry count (default 3)\n");
 	wprintf(L"         --state-dir  State file directory\n");
+	wprintf(L"         --window N   Pipeline window size (default 6)\n");
 	wprintf(L"\n");
 	wprintf(L"Examples:\n");
 	wprintf(L"  client.exe query_disks\n");
@@ -420,9 +421,6 @@ int wmain(int argc, wchar_t* argv[])
 	}
 
 	// ============================================================
-	// 未知命令
-	// ============================================================
-	// ============================================================
 	// backup <all|devno>: backup disk(s) to server
 	// ============================================================
 	if (wcscmp(argv[1], L"backup") == 0)
@@ -468,6 +466,8 @@ int wmain(int argc, wchar_t* argv[])
 				config.RetryCount = _wtoi(argv[++i]);
 			else if (wcscmp(argv[i], L"--state-dir") == 0 && i + 1 < argc)
 				config.StateDir = argv[++i];
+			else if (wcscmp(argv[i], L"--window") == 0 && i + 1 < argc)
+				config.PipelineWindowSize = _wtoi(argv[++i]);
 		}
 
 		// validate
@@ -492,6 +492,7 @@ int wmain(int argc, wchar_t* argv[])
 		wprintf(L"========================================================\n");
 		wprintf(L"  Targets : "); for (auto d : targets) wprintf(L"Disk%d ", d); wprintf(L"\n");
 		if (!config.DryRun) wprintf(L"  Server  : %hs:%hu\n", config.ServerIp.c_str(), config.Port);
+		wprintf(L"  Window  : %d\n", config.PipelineWindowSize);
 		wprintf(L"  Retry   : %d\n  State   : %s\n\n", config.RetryCount, config.StateDir.c_str());
 
 		// run backup

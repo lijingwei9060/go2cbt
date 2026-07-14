@@ -28,7 +28,12 @@ namespace BackupEngine
 
 
 		BackupEngine::BackupEngine()
-
+			: m_windowSize(0)
+			, m_window(nullptr)
+			, m_inFlightCount(0)
+			, m_ackedCount(0)
+			, m_failedCount(0)
+			, m_pipelineError(false)
 		{
 
 		}
@@ -36,9 +41,9 @@ namespace BackupEngine
 
 
 		BackupEngine::~BackupEngine()
-
 		{
-
+			delete[] m_window;
+			m_window = nullptr;
 		}
 
 
@@ -188,8 +193,9 @@ namespace BackupEngine
 
 		// ============================================================
 
-		// 全量备份
-		// 流程：VSS快照 → 连接服务器+HELLO → 计算Hash → 传输数据 → 断开
+		// 全量备份（流水线模式）
+		// 流程：VSS快照 → 连接服务器+HELLO → 逐块(读→hash→压缩→发送) → 断开
+		// 不再 BuildManifest 一次性算所有 hash，改为边算边传
 		// ============================================================
 
 	bool BackupEngine::FullBackup(const BackupConfig& config, int devNo,
@@ -446,7 +452,13 @@ namespace BackupEngine
 
 
 
-		// ---- ★ 先连接服务器+发送 HELLO，验证连接后再做耗时的 hash 计算 ----
+		// ---- 预分配块状态（流水线模式：先分配，hash 后填充） ----
+
+		state.InitFullBlocksEmpty((uint64_t)ver.VersionId, totalBlocks);
+
+
+
+		// ---- 连接服务器+发送 HELLO ----
 
 		DataCompress::DataCompressor compressor;
 
@@ -462,13 +474,13 @@ namespace BackupEngine
 
 		{
 
-			LOG_INFO(L"[BackupEngine] Connecting to server BEFORE hash computation...");
+			LOG_INFO(L"[BackupEngine] Connecting to server...");
 
 			if (!client.Connect(config.ServerIp, config.Port, config.TimeoutSec))
 
 			{
 
-				LOG_ERROR(L"[BackupEngine] Connect to server failed - aborting before hash computation");
+				LOG_ERROR(L"[BackupEngine] Connect to server failed");
 
 				vss.Cleanup();
 
@@ -494,62 +506,17 @@ namespace BackupEngine
 
 			}
 
-			LOG_INFO(L"[BackupEngine] Server connection established, starting hash computation...");
+			LOG_INFO(L"[BackupEngine] Server connection established, starting pipeline transfer...");
 
 		}
 
 
 
-		// ---- 计算 Hash 清单（耗时操作，连接已建立） ----
-
-		LOG_DEBUG(L"[BackupEngine] ===== Phase: Build Hash Manifest =====");
-
-
+		// ---- 初始化 hash 模块 ----
 
 		BlockHash::BlockHasher hasher;
 
 		hasher.Initialize();
-
-
-
-		BlockHash::HashManifest manifest;
-
-
-
-		HANDLE hReadSource = CreateFileW(dataSource.c_str(),
-
-			GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-
-			nullptr, OPEN_EXISTING, 0, nullptr);
-
-
-
-		if (hReadSource != INVALID_HANDLE_VALUE)
-
-		{
-
-			hasher.BuildManifest(hReadSource, 0, totalSize,
-				dataSource.c_str(), manifest);
-
-			state.InitFullBlocks(ver.VersionId, manifest);
-
-			CloseHandle(hReadSource);
-
-		}
-
-		else
-
-		{
-
-			// 无读取源，使用空清单
-
-			manifest.TotalBlocks = totalBlocks;
-
-			manifest.BlockSize = BlockHash::BLOCK_SIZE;
-
-			state.InitFullBlocks(ver.VersionId, manifest);
-
-		}
 
 
 
@@ -561,10 +528,10 @@ namespace BackupEngine
 
 
 
-		// ---- 传输数据块 ----
+		// ---- 流水线传输（核心改动：不再 BuildManifest，边算 hash 边传输） ----
 
-		uint64_t sent = TransferBlocks(config, devNo, hasher, compressor, client, state,
-			(uint32_t)ver.VersionId, totalBlocks, dataSource, stats);
+		uint64_t sent = PipelineTransferBlocks(config, devNo, hasher, compressor, client, state,
+			(uint32_t)ver.VersionId, totalBlocks, totalSize, dataSource, stats);
 
 
 
@@ -1010,8 +977,633 @@ namespace BackupEngine
 
 		// ============================================================
 
-		// 传输块数据
+		// 流水线传输（全量备份专用）
+		//
+		// 核心思路：
+		// - 逐块处理：读 → 算 hash → 压缩 → 非阻塞发送
+		// - 环形窗口：窗口 N 个槽位，不等 ACK 就发下一块
+		// - ACK 线程：独立线程 recv ACK，回调释放窗口 + 更新状态
+		// - hash 清单和 block state 在传输过程中逐步构建
+		//
+		// 对比旧流程：
+		// - 旧：BuildManifest（遍历磁盘算 hash）→ TransferBlocks（重新遍历磁盘发送）
+		// - 新：一遍完成，读一次磁盘，边算 hash 边传输，省一半磁盘 I/O
+		// ============================================================
 
+	uint64_t BackupEngine::PipelineTransferBlocks(const BackupConfig& config, int devNo,
+
+		BlockHash::BlockHasher& hasher,
+
+		DataCompress::DataCompressor& compressor,
+
+		Network::NetworkClient& client,
+
+		BlockState::BlockStateManager& state,
+
+		uint32_t versionId, uint64_t totalBlocks, uint64_t totalSize,
+
+		const std::wstring& dataSourcePath,
+
+		BackupStats& stats)
+
+	{
+
+		// ---- 初始化流水线窗口 ----
+
+		m_windowSize = config.PipelineWindowSize;
+
+		ResetPipelineWindow();
+
+
+
+		wchar_t startMsg[256];
+
+		swprintf_s(startMsg, L"[BackupEngine] Pipeline transfer: %llu blocks, window=%d",
+			totalBlocks, m_windowSize);
+
+		LOG_INFO(startMsg);
+
+
+
+		// ---- 打开数据源 ----
+
+		HANDLE hSource = CreateFileW(
+
+			dataSourcePath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+
+			nullptr, OPEN_EXISTING, 0, nullptr);
+
+
+
+		if (hSource == INVALID_HANDLE_VALUE)
+
+		{
+
+			LOG_ERROR(L"[BackupEngine] Failed to open data source for pipeline transfer");
+
+			return 0;
+
+		}
+
+
+
+		// ---- 设置 ACK 回调 ----
+
+		auto ackCallback = [this, &state](uint32_t cbDevNo, uint64_t blockIndex,
+			const uint8_t hash[32], uint32_t status)
+
+		{
+
+			if (blockIndex == 0xFFFFFFFFFFFFFFFFULL)
+
+			{
+
+				// 特殊标记：ACK 线程遇到连接错误
+				m_pipelineError = true;
+				m_windowCv.notify_all();
+
+				LOG_ERROR(L"[BackupEngine] ACK thread reported connection error");
+
+				return;
+
+			}
+
+
+
+			if (status == 0)
+
+			{
+
+				// ACK 成功
+
+				state.SetBlockAck(blockIndex, BlockState::AckStatus::Acknowledged);
+
+				m_ackedCount++;
+
+			}
+
+			else
+
+			{
+
+				// 服务端返回错误
+
+				state.SetBlockAck(blockIndex, BlockState::AckStatus::Failed);
+
+				m_failedCount++;
+
+
+
+				wchar_t msg[256];
+
+				swprintf_s(msg, L"[BackupEngine] ACK error for block %llu: status=%u",
+					blockIndex, status);
+
+				LOG_WARNING(msg);
+
+			}
+
+
+
+			// 释放窗口槽位
+
+			ReleaseSlot(blockIndex);
+
+			m_inFlightCount--;
+
+			m_windowCv.notify_all();
+
+		};
+
+
+
+		// ---- 启动 ACK 接收线程 ----
+
+		if (!config.DryRun)
+
+		{
+
+			client.StartAckReceiver(ackCallback);
+
+		}
+
+
+
+		// ---- 流水线主循环 ----
+
+		uint64_t sentCount = 0;
+
+		uint64_t totalCompressed = 0;
+
+		uint64_t skippedCount = 0;
+
+
+
+		for (uint64_t i = 0; i < totalBlocks; i++)
+
+		{
+
+			// 检查流水线错误（ACK 线程检测到连接断开）
+
+			if (m_pipelineError.load())
+
+			{
+
+				LOG_ERROR(L"[BackupEngine] Pipeline error detected, aborting transfer");
+
+				break;
+
+			}
+
+
+
+			// 计算块大小（最后一个块可能不足 1MB）
+
+			uint32_t blockSize = BlockHash::BLOCK_SIZE;
+
+			if (i == totalBlocks - 1)
+
+			{
+
+				uint64_t remain = totalSize - i * BlockHash::BLOCK_SIZE;
+
+				if (remain < BlockHash::BLOCK_SIZE && remain > 0)
+
+				{
+
+					blockSize = (uint32_t)remain;
+
+				}
+
+			}
+
+
+
+			if (config.DryRun)
+
+			{
+
+				// ---- 模拟模式：不需要网络，直接标记成功 ----
+
+
+
+				// 读取块数据
+
+				std::vector<uint8_t> blockData(blockSize);
+
+				bool readOk = false;
+
+				LARGE_INTEGER pos;
+
+				pos.QuadPart = i * BlockHash::BLOCK_SIZE;
+
+				if (SetFilePointerEx(hSource, pos, nullptr, FILE_BEGIN))
+
+				{
+
+					DWORD read = 0;
+
+					if (ReadFile(hSource, blockData.data(), blockSize, &read, nullptr) && read == blockSize)
+
+					{
+
+						readOk = true;
+
+					}
+
+				}
+
+
+
+				if (!readOk)
+
+				{
+
+					stats.FailedBlocks++;
+
+					continue;
+
+				}
+
+
+
+				// 算 hash
+
+				uint8_t hash[32];
+
+				if (!hasher.ComputeBlockHash(blockData.data(), blockSize, hash))
+
+				{
+
+					stats.FailedBlocks++;
+
+					continue;
+
+				}
+
+
+
+				// 更新状态
+
+				state.SetBlockHash(i, hash);
+
+				state.SetBlockAck(i, BlockState::AckStatus::Acknowledged);
+
+				sentCount++;
+
+
+
+				// 进度日志
+
+				if (sentCount % 100 == 0 && sentCount > 0)
+
+				{
+
+					double pct = (double)sentCount / (double)totalBlocks * 100.0;
+
+					wchar_t progressMsg[256];
+
+					swprintf_s(progressMsg, L"[BackupEngine] Pipeline progress (dryrun): %llu/%llu blocks (%.1f%%)",
+						sentCount, totalBlocks, pct);
+
+					LOG_INFO(progressMsg);
+
+					state.Save();
+
+				}
+
+
+
+				continue;
+
+			}
+
+
+
+			// ---- 真实模式：获取窗口槽位（窗口满时阻塞等待） ----
+
+			int slotIdx = AcquireSlot();
+
+			if (slotIdx < 0)
+
+			{
+
+				// 超时或异常
+
+				LOG_ERROR(L"[BackupEngine] AcquireSlot timed out or pipeline error");
+
+				break;
+
+			}
+
+
+
+			auto& slot = m_window[slotIdx];
+
+			slot.BlockIndex = i;
+
+			slot.BlockData.resize(blockSize);
+
+			slot.RawSize = blockSize;
+
+			slot.SendFailed = false;
+
+
+
+			// ---- 读取块数据 ----
+
+			bool readOk = false;
+
+			LARGE_INTEGER pos;
+
+			pos.QuadPart = i * BlockHash::BLOCK_SIZE;
+
+			if (SetFilePointerEx(hSource, pos, nullptr, FILE_BEGIN))
+
+			{
+
+				DWORD read = 0;
+
+				if (ReadFile(hSource, slot.BlockData.data(), blockSize, &read, nullptr) && read == blockSize)
+
+				{
+
+					readOk = true;
+
+				}
+
+			}
+
+
+
+			if (!readOk)
+
+			{
+
+				wchar_t failMsg[256];
+
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu read failed, skipping", i);
+
+				LOG_WARNING(failMsg);
+
+
+
+				// 释放槽位，跳过此块
+
+				slot.InUse = false;
+
+				slot.BlockData.clear();
+
+				m_windowCv.notify_one();
+
+
+
+				stats.FailedBlocks++;
+
+				skippedCount++;
+
+				continue;
+
+			}
+
+
+
+			// ---- 计算 SHA-256 哈希 ----
+
+			if (!hasher.ComputeBlockHash(slot.BlockData.data(), blockSize, slot.Hash))
+
+			{
+
+				wchar_t failMsg[256];
+
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu hash failed, skipping", i);
+
+				LOG_WARNING(failMsg);
+
+
+
+				slot.InUse = false;
+
+				slot.BlockData.clear();
+
+				m_windowCv.notify_one();
+
+
+
+				stats.FailedBlocks++;
+
+				skippedCount++;
+
+				continue;
+
+			}
+
+
+
+			// 更新块状态中的哈希（流水线逐步构建）
+
+			state.SetBlockHash(i, slot.Hash);
+
+
+
+			// ---- 压缩 ----
+
+			if (!compressor.Compress(slot.BlockData.data(), blockSize, slot.Compressed))
+
+			{
+
+				wchar_t failMsg[256];
+
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu compress failed, skipping", i);
+
+				LOG_WARNING(failMsg);
+
+
+
+				slot.InUse = false;
+
+				slot.BlockData.clear();
+
+				m_windowCv.notify_one();
+
+
+
+				stats.FailedBlocks++;
+
+				skippedCount++;
+
+				continue;
+
+			}
+
+
+
+			totalCompressed += slot.Compressed.size();
+
+
+
+			// ---- 非阻塞发送（不等待 ACK，ACK 由后台线程接收） ----
+
+			bool sent = client.SendBlockNoWait(
+
+				devNo, i,
+
+				slot.BlockData.data(), blockSize,
+
+				slot.Compressed.data(), (uint32_t)slot.Compressed.size(),
+
+				slot.Hash, versionId);
+
+
+
+			if (!sent)
+
+			{
+
+				// 发送失败 = 网络断开，中止流水线
+
+				wchar_t failMsg[256];
+
+				swprintf_s(failMsg, L"[BackupEngine] Block %llu send failed - network error, aborting pipeline", i);
+
+				LOG_ERROR(failMsg);
+
+
+
+				slot.InUse = false;
+
+				slot.BlockData.clear();
+
+				m_windowCv.notify_one();
+
+
+
+				m_pipelineError = true;
+
+				break;
+
+			}
+
+
+
+			sentCount++;
+
+			m_inFlightCount++;
+
+
+
+			// 释放原始块数据内存（压缩后不再需要原始数据，节约内存）
+
+			slot.BlockData.clear();
+
+			slot.BlockData.shrink_to_fit();
+
+
+
+			// 进度日志
+
+			if (sentCount % 100 == 0 && sentCount > 0)
+
+			{
+
+				double pct = (double)sentCount / (double)totalBlocks * 100.0;
+
+				wchar_t progressMsg[256];
+
+				swprintf_s(progressMsg,
+					L"[BackupEngine] Pipeline progress: %llu/%llu sent (%.1f%%), %llu acked, %d in-flight, compressed %llu bytes",
+					sentCount, totalBlocks, pct,
+					m_ackedCount.load(), m_inFlightCount.load(), totalCompressed);
+
+				LOG_INFO(progressMsg);
+
+				state.Save();
+
+			}
+
+		}
+
+
+
+		// ---- 等待所有在途块的 ACK ----
+
+		if (m_inFlightCount.load() > 0 && !m_pipelineError.load())
+
+		{
+
+			wchar_t waitMsg[256];
+
+			swprintf_s(waitMsg, L"[BackupEngine] Waiting for %d in-flight ACKs...",
+				m_inFlightCount.load());
+
+			LOG_INFO(waitMsg);
+
+
+
+			bool allAcked = WaitForAllAcks();
+
+			if (!allAcked)
+
+			{
+
+				LOG_WARNING(L"[BackupEngine] Timeout waiting for in-flight ACKs");
+
+			}
+
+		}
+
+
+
+		// ---- 停止 ACK 接收线程 ----
+
+		if (!config.DryRun)
+
+		{
+
+			client.StopAckReceiver();
+
+		}
+
+
+
+		// ---- 关闭数据源 ----
+
+		CloseHandle(hSource);
+
+
+
+		// ---- 汇总统计 ----
+
+		stats.SentBlocks = sentCount;
+
+		stats.AckedBlocks = m_ackedCount.load();
+
+		stats.FailedBlocks += m_failedCount.load();
+
+		stats.SkippedBlocks = skippedCount;
+
+		stats.CompressedBytes = totalCompressed;
+
+
+
+		wchar_t msg[256];
+
+		swprintf_s(msg, L"[BackupEngine] Pipeline complete: %llu sent, %llu acked, %llu failed, %llu skipped, compressed %llu bytes",
+			sentCount, stats.AckedBlocks, stats.FailedBlocks, skippedCount, totalCompressed);
+
+		LOG_INFO(msg);
+
+
+
+		return sentCount;
+
+	}
+
+
+
+		// ============================================================
+
+		// 同步传输块数据（增量备份使用，保留原有逻辑）
 		// ============================================================
 
 	uint64_t BackupEngine::TransferBlocks(const BackupConfig& config, int devNo,
@@ -1302,6 +1894,150 @@ namespace BackupEngine
 
 
 		return sentCount;
+
+	}
+
+
+
+		// ============================================================
+
+		// 流水线窗口管理
+
+		// ============================================================
+
+	void BackupEngine::ResetPipelineWindow()
+
+	{
+
+		std::lock_guard<std::mutex> lock(m_windowMutex);
+
+
+
+		delete[] m_window;
+
+		m_window = new PipelineSlot[m_windowSize];
+
+
+
+		m_inFlightCount = 0;
+
+		m_ackedCount = 0;
+
+		m_failedCount = 0;
+
+		m_pipelineError = false;
+
+	}
+
+
+
+	int BackupEngine::AcquireSlot(int timeoutMs)
+
+	{
+
+		std::unique_lock<std::mutex> lock(m_windowMutex);
+
+
+
+		bool ok = m_windowCv.wait_for(lock,
+
+			std::chrono::milliseconds(timeoutMs),
+
+			[this] {
+
+				if (m_pipelineError.load()) return true;
+
+				for (int i = 0; i < m_windowSize; i++)
+
+					if (!m_window[i].InUse) return true;
+
+				return false;
+
+			});
+
+
+
+		if (!ok) return -1;  // 超时
+
+
+
+		if (m_pipelineError.load()) return -1;  // 连接错误
+
+
+
+		for (int i = 0; i < m_windowSize; i++)
+
+		{
+
+			if (!m_window[i].InUse)
+
+			{
+
+				m_window[i].InUse = true;
+
+				return i;
+
+			}
+
+		}
+
+
+
+		return -1;  // 不应到达
+
+	}
+
+
+
+	void BackupEngine::ReleaseSlot(uint64_t blockIndex)
+
+	{
+
+		std::lock_guard<std::mutex> lock(m_windowMutex);
+
+
+
+		for (int i = 0; i < m_windowSize; i++)
+
+		{
+
+			if (m_window[i].InUse && m_window[i].BlockIndex == blockIndex)
+
+			{
+
+				m_window[i].InUse = false;
+
+				m_window[i].BlockData.clear();
+
+				m_window[i].BlockData.shrink_to_fit();
+
+				m_window[i].Compressed.clear();
+
+				m_window[i].Compressed.shrink_to_fit();
+
+				break;
+
+			}
+
+		}
+
+		// 不在这里 notify，由调用者负责
+
+	}
+
+
+
+	bool BackupEngine::WaitForAllAcks(int timeoutMs)
+
+	{
+
+		std::unique_lock<std::mutex> lock(m_windowMutex);
+
+		return m_windowCv.wait_for(lock,
+
+			std::chrono::milliseconds(timeoutMs),
+
+			[this] { return m_inFlightCount.load() == 0 || m_pipelineError.load(); });
 
 	}
 

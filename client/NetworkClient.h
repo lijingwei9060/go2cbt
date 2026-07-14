@@ -11,6 +11,9 @@
 #include <string>
 #include <vector>
 #include <functional>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
 
 #pragma comment(lib, "ws2_32.lib")
@@ -113,7 +116,7 @@ public:
 		const std::wstring& versionType);
 
 	//
-	// 发送数据块 + 等待 ACK
+	// 发送数据块 + 等待 ACK（同步模式，增量备份使用）
 	// devNo: 磁盘编号
 	// blockIndex: 块编号
 	// rawData: 原始数据（压缩前）
@@ -131,6 +134,28 @@ public:
 		const uint8_t hash[32], uint32_t versionId);
 
 	//
+	// 非阻塞发送数据块（流水线模式：不等待 ACK）
+	// 参数同 SendBlock，但发送后立即返回
+	// ACK 由 StartAckReceiver 启动的后台线程异步接收
+	//
+	bool SendBlockNoWait(uint32_t devNo, uint64_t blockIndex,
+		const uint8_t* rawData, uint32_t rawSize,
+		const uint8_t* compressedData, uint32_t compressedSize,
+		const uint8_t hash[32], uint32_t versionId);
+
+	//
+	// 启动 ACK 接收线程
+	// callback: 每收到一个 ACK 时调用
+	// 调用者负责线程安全（callback 在后台线程中执行）
+	//
+	void StartAckReceiver(AckCallback callback);
+
+	//
+	// 停止 ACK 接收线程并等待退出
+	//
+	void StopAckReceiver();
+
+	//
 	// 发送 BYE 消息 + 等待 ACK
 	//
 	bool SendBye(uint32_t devNo);
@@ -143,7 +168,7 @@ public:
 	//
 	// 是否已连接
 	//
-	bool IsConnected() const { return m_connected; }
+	bool IsConnected() const { return m_connected.load(); }
 
 	//
 	// 设置 / 获取超时秒数
@@ -184,18 +209,31 @@ private:
 		bool SetTcpKeepAlive(SOCKET sock);
 
 	//
-	// 接收并解析 ACK
+	// 接收并解析 ACK（同步模式使用）
 	//
 	bool ReceiveAck(uint32_t devNo, uint64_t expectedBlockIndex);
 
+	//
+	// ACK 接收线程主循环
+	// 使用 select() 轮询，每秒检查 m_ackReceiverRunning 标志
+	//
+	void AckReceiverLoop();
+
 	SOCKET m_socket;
-	bool m_connected;
+	std::atomic<bool> m_connected;
 	int m_timeoutSec;
 
 	std::string m_serverIp;
 	uint16_t m_port;
 
 	std::wstring m_lastError;
+
+	// ACK 接收线程相关
+	std::thread m_ackThread;
+	std::atomic<bool> m_ackReceiverRunning;
+	AckCallback m_ackCallback;
+	// 发送互斥锁：保证流水线模式中 SendBlockNoWait 不会被并发调用
+	std::mutex m_sendMutex;
 };
 
 } // namespace Network

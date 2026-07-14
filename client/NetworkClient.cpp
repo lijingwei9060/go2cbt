@@ -11,12 +11,14 @@ namespace Network
 		, m_connected(false)
 		, m_timeoutSec(30)
 		, m_port(0)
+		, m_ackReceiverRunning(false)
 	{
 		InitializeWinsock();
 	}
 
 	NetworkClient::~NetworkClient()
 	{
+		StopAckReceiver();
 		Disconnect();
 	}
 
@@ -109,7 +111,7 @@ namespace Network
 		uint64_t totalBlocks, uint64_t totalSize,
 		const std::wstring& versionType)
 	{
-		if (!m_connected)
+		if (!m_connected.load())
 		{
 			LOG_ERROR(L"[NetworkClient] SendHello called but not connected");
 			return false;
@@ -154,14 +156,14 @@ namespace Network
 	}
 
 	// ============================================================
-	// 发送数据块 + 等待 ACK
+	// 发送数据块 + 等待 ACK（同步模式，增量备份使用）
 	// ============================================================
 	bool NetworkClient::SendBlock(uint32_t devNo, uint64_t blockIndex,
 		const uint8_t* rawData, uint32_t rawSize,
 		const uint8_t* compressedData, uint32_t compressedSize,
 		const uint8_t hash[32], uint32_t versionId)
 	{
-		if (!m_connected) return false;
+		if (!m_connected.load()) return false;
 
 		// ---- Header ----
 		MsgHeader hdr;
@@ -202,11 +204,221 @@ namespace Network
 	}
 
 	// ============================================================
+	// 非阻塞发送数据块（流水线模式：不等待 ACK）
+	// ============================================================
+	bool NetworkClient::SendBlockNoWait(uint32_t devNo, uint64_t blockIndex,
+		const uint8_t* rawData, uint32_t rawSize,
+		const uint8_t* compressedData, uint32_t compressedSize,
+		const uint8_t hash[32], uint32_t versionId)
+	{
+		if (!m_connected.load()) return false;
+
+		// 加锁防止并发 SendAll（主线程独占发送）
+		std::lock_guard<std::mutex> lock(m_sendMutex);
+
+		// ---- Header ----
+		MsgHeader hdr;
+		memset(&hdr, 0, sizeof(hdr));
+		hdr.Magic = PROTOCOL_MAGIC;
+		hdr.Type = (uint32_t)MessageType::DATA_BLOCK;
+		hdr.DevNo = devNo;
+
+		// ---- Block Header ----
+		BlockHeader blkHdr;
+		memset(&blkHdr, 0, sizeof(blkHdr));
+		blkHdr.BlockIndex = blockIndex;
+		blkHdr.DataSize = rawSize;
+		blkHdr.CompressedSize = compressedSize;
+		memcpy(blkHdr.Hash, hash, 32);
+		blkHdr.VersionId = versionId;
+
+		// 发送（不等待 ACK）
+		if (!SendAll((uint8_t*)&hdr, sizeof(hdr))) return false;
+		if (!SendAll((uint8_t*)&blkHdr, sizeof(blkHdr))) return false;
+		if (!SendAll(compressedData, compressedSize)) return false;
+
+		// 发送日志（DEBUG 级别）
+		{
+			wchar_t hexStr[65];
+			for (int hi = 0; hi < 32; hi++)
+				swprintf_s(hexStr + hi * 2, 3, L"%02X", hash[hi]);
+			hexStr[64] = L'\0';
+
+			wchar_t dbg[384];
+			swprintf_s(dbg, L"[NetworkClient] SEND (pipeline) block=%llu dev=%u raw=%u compressed=%u hash=%s",
+				blockIndex, devNo, rawSize, compressedSize, hexStr);
+			LOG_DEBUG(dbg);
+		}
+
+		return true;
+	}
+
+	// ============================================================
+	// 启动 ACK 接收线程
+	// ============================================================
+	void NetworkClient::StartAckReceiver(AckCallback callback)
+	{
+		// 如果已有线程在运行，先停止
+		StopAckReceiver();
+
+		m_ackCallback = callback;
+		m_ackReceiverRunning = true;
+		m_ackThread = std::thread(&NetworkClient::AckReceiverLoop, this);
+
+		LOG_INFO(L"[NetworkClient] ACK receiver thread started");
+	}
+
+	// ============================================================
+	// 停止 ACK 接收线程并等待退出
+	// ============================================================
+	void NetworkClient::StopAckReceiver()
+	{
+		if (!m_ackReceiverRunning.load())
+		{
+			// 线程未运行，直接返回
+			if (m_ackThread.joinable())
+			{
+				m_ackThread.join();
+			}
+			return;
+		}
+
+		m_ackReceiverRunning = false;
+
+		// 等待线程退出（select 最多 1 秒超时，很快响应）
+		if (m_ackThread.joinable())
+		{
+			m_ackThread.join();
+		}
+
+		LOG_INFO(L"[NetworkClient] ACK receiver thread stopped");
+	}
+
+	// ============================================================
+	// ACK 接收线程主循环
+	// 使用 select() 轮询 socket，每秒检查退出标志
+	// ============================================================
+	void NetworkClient::AckReceiverLoop()
+	{
+		LOG_DEBUG(L"[NetworkClient] AckReceiverLoop entered");
+
+		while (m_ackReceiverRunning.load())
+		{
+			// 使用 select 检查是否有数据可读（1 秒超时）
+			fd_set readFds;
+			FD_ZERO(&readFds);
+			FD_SET(m_socket, &readFds);
+
+			struct timeval timeout;
+			timeout.tv_sec = 1;
+			timeout.tv_usec = 0;
+
+			int selectResult = select(0, &readFds, nullptr, nullptr, &timeout);
+
+			if (selectResult == SOCKET_ERROR)
+			{
+				int err = WSAGetLastError();
+				wchar_t msg[256];
+				swprintf_s(msg, L"[NetworkClient] ACK thread select() error=%d", err);
+				LOG_ERROR(msg);
+
+				// 通知上层连接出错
+				if (m_ackCallback)
+				{
+					uint8_t zeroHash[32] = {};
+					m_ackCallback(0, 0xFFFFFFFFFFFFFFFFULL, zeroHash, (uint32_t)-1);
+				}
+				break;
+			}
+
+			if (selectResult == 0)
+			{
+				// 超时，检查退出标志后继续
+				continue;
+			}
+
+			// 有数据可读，接收 ACK
+			MsgHeader hdr;
+			memset(&hdr, 0, sizeof(hdr));
+			if (!RecvAll((uint8_t*)&hdr, sizeof(hdr)))
+			{
+				LOG_ERROR(L"[NetworkClient] ACK thread RecvAll(header) failed - connection lost");
+				if (m_ackCallback)
+				{
+					uint8_t zeroHash[32] = {};
+					m_ackCallback(0, 0xFFFFFFFFFFFFFFFFULL, zeroHash, (uint32_t)-2);
+				}
+				break;
+			}
+
+			// 验证消息头
+			if (hdr.Magic != PROTOCOL_MAGIC)
+			{
+				LOG_ERROR(L"[NetworkClient] ACK thread: magic mismatch");
+				if (m_ackCallback)
+				{
+					uint8_t zeroHash[32] = {};
+					m_ackCallback(0, 0xFFFFFFFFFFFFFFFFULL, zeroHash, (uint32_t)-3);
+				}
+				break;
+			}
+
+			if (hdr.Type != (uint32_t)MessageType::ACK)
+			{
+				wchar_t msg[256];
+				swprintf_s(msg, L"[NetworkClient] ACK thread: expected ACK(0x02), got type=0x%X", hdr.Type);
+				LOG_ERROR(msg);
+				if (m_ackCallback)
+				{
+					uint8_t zeroHash[32] = {};
+					m_ackCallback(0, 0xFFFFFFFFFFFFFFFFULL, zeroHash, (uint32_t)-4);
+				}
+				break;
+			}
+
+			// 接收 ACK Body
+			AckBody ack;
+			memset(&ack, 0, sizeof(ack));
+			if (!RecvAll((uint8_t*)&ack, sizeof(ack)))
+			{
+				LOG_ERROR(L"[NetworkClient] ACK thread RecvAll(body) failed");
+				if (m_ackCallback)
+				{
+					uint8_t zeroHash[32] = {};
+					m_ackCallback(0, 0xFFFFFFFFFFFFFFFFULL, zeroHash, (uint32_t)-5);
+				}
+				break;
+			}
+
+			// ACK 成功日志（DEBUG 级别）
+			{
+				wchar_t hexStr[65];
+				for (int hi = 0; hi < 32; hi++)
+					swprintf_s(hexStr + hi * 2, 3, L"%02X", ack.Hash[hi]);
+				hexStr[64] = L'\0';
+
+				wchar_t dbg[256];
+				swprintf_s(dbg, L"[NetworkClient] RECV ACK (pipeline) block=%llu dev=%u status=%u hash=%s",
+					ack.BlockIndex, ack.DevNo, ack.Status, hexStr);
+				LOG_DEBUG(dbg);
+			}
+
+			// 调用回调通知上层
+			if (m_ackCallback)
+			{
+				m_ackCallback(ack.DevNo, ack.BlockIndex, ack.Hash, ack.Status);
+			}
+		}
+
+		LOG_DEBUG(L"[NetworkClient] AckReceiverLoop exiting");
+	}
+
+	// ============================================================
 	// 发送 BYE
 	// ============================================================
 	bool NetworkClient::SendBye(uint32_t devNo)
 	{
-		if (!m_connected) return false;
+		if (!m_connected.load()) return false;
 
 		LOG_INFO(L"[NetworkClient] Sending BYE...");
 
@@ -297,7 +509,7 @@ namespace Network
 	}
 
 	// ============================================================
-	// 接收并解析 ACK
+	// 接收并解析 ACK（同步模式）
 	// ============================================================
 	bool NetworkClient::ReceiveAck(uint32_t devNo, uint64_t expectedBlockIndex)
 	{

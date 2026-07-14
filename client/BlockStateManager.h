@@ -116,6 +116,16 @@ public:
 	//
 	bool InitFullBlocks(uint64_t versionId, const BlockHash::HashManifest& manifest);
 
+		//
+		// 预分配全量备份块状态（流水线模式：先分配，后填充哈希）
+		//
+		bool InitFullBlocksEmpty(uint64_t versionId, uint64_t totalBlocks);
+
+		//
+		// 设置单个块的哈希值（流水线模式下逐块更新）
+		//
+		bool SetBlockHash(uint64_t blockIndex, const uint8_t hash[32]);
+
 	//
 	// 更新增量备份中变化块的哈希
 	// versionId: 版本 ID

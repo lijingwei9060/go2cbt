@@ -151,6 +151,64 @@ namespace BlockState
 	}
 
 	// ============================================================
+	// ============================================================
+	// 预分配全量备份块状态（流水线模式）
+	// ============================================================
+	bool BlockStateManager::InitFullBlocksEmpty(uint64_t versionId, uint64_t totalBlocks)
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+
+		auto it = m_versions.find(versionId);
+		if (it == m_versions.end())
+		{
+			LOG_ERROR(L"[BlockState] InitFullBlocksEmpty: version not found");
+			return false;
+		}
+
+		m_totalBlocks = totalBlocks;
+		m_blocks.clear();
+		m_blocks.reserve(m_totalBlocks);
+
+		for (uint64_t i = 0; i < m_totalBlocks; i++)
+		{
+			BlockState bs;
+			bs.BlockIndex = i;
+			bs.Offset = i * BLOCK_SIZE;
+			memset(bs.Hash, 0, SHA256_SIZE);
+			bs.VersionId = versionId;
+			bs.Ack = AckStatus::Pending;
+			bs.Changed = true;
+			m_blocks.push_back(bs);
+		}
+
+		it->second.ChangedBlocks = m_totalBlocks;
+		m_dirty = true;
+
+		wchar_t msg[256];
+		swprintf_s(msg, L"[BlockState] Full blocks pre-allocated (pipeline): %llu blocks for version %llu",
+			m_totalBlocks, versionId);
+		LOG_INFO(msg);
+
+		return true;
+	}
+
+	// ============================================================
+	// 设置单个块的哈希值（流水线模式）
+	// ============================================================
+	bool BlockStateManager::SetBlockHash(uint64_t blockIndex, const uint8_t hash[32])
+	{
+		std::lock_guard<std::mutex> lock(m_mutex);
+
+		if (blockIndex >= m_blocks.size())
+		{
+			return false;
+		}
+
+		memcpy(m_blocks[blockIndex].Hash, hash, SHA256_SIZE);
+		m_dirty = true;
+		return true;
+	}
+
 	// 更新增量备份块状态
 	// ============================================================
 	bool BlockStateManager::UpdateIncrementalBlocks(uint64_t versionId,
